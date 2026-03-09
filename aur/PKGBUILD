@@ -1,0 +1,112 @@
+# Maintainer: aerogel contributors
+# AUR split package for Aerogel -- AeroSpace-inspired BSP tiling for KDE Plasma 6
+#
+# Produces five packages:
+#   aerogel                         meta-package (pulls in all components)
+#   kwin-scripts-aerogel            KWin BSP tiling script
+#   plasma6-applets-aerogel-pager   Plasma panel workspace pager widget
+#   aerogel-cursor                  D-Bus cursor-warp service (ydotool)
+#   aerogel-icons                   Hicolor icon for KDE integration
+
+pkgbase=aerogel
+pkgname=(
+  aerogel
+  kwin-scripts-aerogel
+  plasma6-applets-aerogel-pager
+  aerogel-cursor
+  aerogel-icons
+)
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="AeroSpace-inspired BSP tiling window manager for KDE Plasma 6"
+arch=('any')
+url="https://github.com/your-org/aerogel"
+license=('GPL-3.0-or-later')
+makedepends=('nodejs' 'npm')
+source=("$pkgbase-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgbase-$pkgver"
+  npm install
+  npm run build
+}
+
+package_aerogel() {
+  pkgdesc="AeroSpace-inspired BSP tiling for KDE Plasma 6 (meta-package)"
+  depends=(
+    'kwin-scripts-aerogel'
+    'plasma6-applets-aerogel-pager'
+    'aerogel-cursor'
+    'aerogel-icons'
+  )
+  # Meta-package -- no files installed.
+}
+
+package_kwin-scripts-aerogel() {
+  pkgdesc="Aerogel BSP tiling KWin script for KDE Plasma 6"
+  depends=('kwin')
+
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/usr/share/kwin/scripts/aerogel"
+  cp -r package/. "$pkgdir/usr/share/kwin/scripts/aerogel/"
+}
+
+package_plasma6-applets-aerogel-pager() {
+  pkgdesc="Aerogel Pager -- workspace indicator and switcher widget for KDE Plasma 6"
+  depends=('plasma-desktop')
+
+  cd "$pkgbase-$pkgver"
+  install -d "$pkgdir/usr/share/plasma/plasmoids/org.aerogel.pager"
+  cp -r widget/package/. "$pkgdir/usr/share/plasma/plasmoids/org.aerogel.pager/"
+}
+
+package_aerogel-cursor() {
+  pkgdesc="Aerogel cursor-warp D-Bus service for multi-monitor Wayland"
+  depends=('python' 'python-dbus' 'python-gobject' 'ydotool')
+
+  cd "$pkgbase-$pkgver"
+
+  # Install the cursor warp script.
+  # On Arch, ydotool/python are at standard /usr/bin/ paths -- the
+  # #!/usr/bin/env python3 shebang works as-is (no path rewriting needed).
+  install -Dm755 scripts/aerogel-cursor.py \
+    "$pkgdir/usr/bin/aerogel-cursor"
+
+  # D-Bus session service activation file.
+  # The session bus auto-starts aerogel-cursor on the first Warp() call.
+  install -Dm644 /dev/stdin \
+    "$pkgdir/usr/share/dbus-1/services/org.aerogel.Cursor.service" <<EOF
+[D-BUS Service]
+Name=org.aerogel.Cursor
+Exec=/usr/bin/aerogel-cursor
+EOF
+
+  # systemd user unit (optional -- for users who prefer explicit service management).
+  install -Dm644 /dev/stdin \
+    "$pkgdir/usr/lib/systemd/user/aerogel-cursor.service" <<'EOF'
+[Unit]
+Description=aerogel-cursor -- D-Bus cursor warp service for Aerogel KWin script
+Documentation=https://github.com/your-org/aerogel
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.aerogel.Cursor
+ExecStart=/usr/bin/aerogel-cursor
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+}
+
+package_aerogel-icons() {
+  pkgdesc="Aerogel icon for KDE integration (hicolor icon theme)"
+  depends=('hicolor-icon-theme')
+
+  cd "$pkgbase-$pkgver"
+  install -Dm644 assets/aerogel-logo.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/aerogel.svg"
+}

@@ -1,0 +1,22 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "Aerogel Contributors"
+            }
+        ],
+        "Category": "Windows and Tasks",
+        "Description": "Workspace indicator and switcher for Aerogel BSP tiling",
+        "Icon": "aerogel",
+        "Id": "org.aerogel.pager",
+        "License": "GPL-3.0-or-later",
+        "Name": "Aerogel Pager",
+        "Version": "0.1.0",
+        "Website": "https://github.com/your-org/aerogel"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-Provides": [
+        "org.kde.plasma.virtualdesktops"
+    ]
+}

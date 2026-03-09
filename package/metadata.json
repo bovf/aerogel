@@ -1,0 +1,19 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Name": "Aerogel",
+    "Description": "AeroSpace-inspired BSP tiling window manager for KDE Plasma 6",
+    "Icon": "aerogel",
+    "Authors": [
+      {
+        "Name": "aerogel contributors",
+        "Email": "aerogel@example.com"
+      }
+    ],
+    "Id": "aerogel",
+    "Version": "0.1.0",
+    "License": "GPL-3.0-or-later"
+  },
+  "X-Plasma-API-Version": "2",
+  "X-Plasma-API": "javascript"
+}

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KConfig XML for the aerogel KWin script.
+  Each <entry> here corresponds to a readConfig() call in src/config/Config.ts.
+  These entries define the settings shown in KDE System Settings → Window Management
+  → KWin Scripts → Aerogel (configure button).
+-->
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+                          http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+  <kcfgfile name=""/>
+  <group name="General">
+
+    <entry name="innerGap" type="UInt">
+      <label>Inner Gap</label>
+      <whatsthis>Gap in pixels between adjacent tiled windows.</whatsthis>
+      <default>8</default>
+    </entry>
+
+    <entry name="outerGap" type="UInt">
+      <label>Outer Gap</label>
+      <whatsthis>Gap in pixels between tiled windows and the screen edge.</whatsthis>
+      <default>8</default>
+    </entry>
+
+  </group>
+</kcfg>

@@ -1,0 +1,15 @@
+node_modules/
+package/contents/code/main.js
+
+# Nix
+result
+.direnv/
+
+# VM ephemeral disk image (created by nix run .#vm)
+*.qcow2
+
+# VM SSH key -- private key must not be committed
+nix/vm/ssh_host_key
+
+# Publish working directories (one per remote)
+publish/
