@@ -6,18 +6,30 @@
 # What gets installed
 # ───────────────────
 #   $out/bin/aerogel-cursor
-#       Python script.  Shebang and ydotool/ydotoold paths are all rewritten
-#       to Nix store paths at build time -- no PATH lookups at runtime.
+#       Python script.  Shebang is rewritten to the Nix store python
+#       at build time -- no PATH lookups at runtime.
 #
 #   $out/share/dbus-1/services/org.aerogel.Cursor.service
 #       D-Bus service activation file.  The session bus starts aerogel-cursor
-#       automatically on the first Warp() call -- no manual systemctl needed.
+#       automatically on the first method call -- no manual systemctl needed.
 #       Works on any distro that respects $XDG_DATA_DIRS for D-Bus services
 #       (all major desktop distros do).
 #
 #   $out/share/systemd/user/aerogel-cursor.service
 #       Optional systemd user unit for users who prefer explicit service
 #       management over D-Bus activation.
+#
+# Implementation note
+# ───────────────────
+#   aerogel-cursor uses python-evdev to create a UInput virtual input device
+#   with EV_ABS axes (ABS_X, ABS_Y).  This gives true pixel-accurate absolute
+#   cursor positioning with no relative-movement hacks and no sensitivity to
+#   mouse acceleration settings.
+#
+#   The previous implementation used ydotool, whose `mousemove --absolute`
+#   flag is implemented as a relative-movement hack (send REL_X=INT32_MIN to
+#   slam the cursor to origin, then REL_X=target) which is unreliable on
+#   multi-monitor setups due to mouse acceleration being applied.
 #
 # NixOS / home-manager
 # ────────────────────
@@ -26,19 +38,23 @@
 #   home-manager puts the package on $XDG_DATA_DIRS -- the D-Bus daemon finds
 #   the activation file automatically.  No manual setup required.
 #
-#   The user must be in the "input" group so ydotoold can open /dev/uinput:
+#   The user must be in the "input" group so the script can open /dev/uinput:
 #     users.users.<name>.extraGroups = [ "input" ];   # in NixOS system config
 #
 # Non-Nix distros
 # ───────────────
-#   Install ydotool from your distro's package manager, then install this
+#   Install python3, python3-dbus (dbus-python), python3-gi (pygobject), and
+#   python3-evdev from your distro's package manager, then install this
 #   package.  The D-Bus activation file does the rest automatically.
-#   Python dependencies (dbus-python, python3-gi) must also be installed.
 #
 { pkgs }:
 
 let
-  python = pkgs.python3.withPackages (ps: [ ps.dbus-python ps.pygobject3 ]);
+  python = pkgs.python3.withPackages (ps: [
+    ps.dbus-python
+    ps.pygobject3
+    ps.evdev
+  ]);
 in
 
 pkgs.stdenvNoCC.mkDerivation {
@@ -53,15 +69,13 @@ pkgs.stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    # ── Wrapped executable ─────────────────────────────────────────────────
+    # ── Executable ─────────────────────────────────────────────────────────
     install -Dm755 $src $out/bin/aerogel-cursor
 
-    # Rewrite shebang and ydotool/ydotoold paths to Nix store paths.
+    # Rewrite shebang to the Nix store python with all deps bundled.
     # No PATH lookups at runtime -- the script is fully self-contained.
     substituteInPlace $out/bin/aerogel-cursor \
-      --replace-fail "#!/usr/bin/env python3"   "#!${python}/bin/python3" \
-      --replace-fail '"ydotoold"'               '"${pkgs.ydotool}/bin/ydotoold"' \
-      --replace-fail '"ydotool"'                '"${pkgs.ydotool}/bin/ydotool"'
+      --replace-fail "#!/usr/bin/env python3" "#!${python}/bin/python3"
 
     # ── D-Bus session service activation file ──────────────────────────────
     # The session D-Bus daemon scans $XDG_DATA_DIRS/dbus-1/services/ and
@@ -96,7 +110,7 @@ pkgs.stdenvNoCC.mkDerivation {
   '';
 
   meta = with pkgs.lib; {
-    description = "Aerogel cursor-warp D-Bus service (requires ydotool at runtime)";
+    description = "Aerogel cursor-warp D-Bus service (python-evdev UInput absolute positioning)";
     license     = licenses.gpl3Plus;
     platforms   = platforms.linux;
     mainProgram = "aerogel-cursor";

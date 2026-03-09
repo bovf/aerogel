@@ -108,7 +108,7 @@ navigation.
 
 - KDE Plasma 6 on Wayland
 
-### Optional: `ydotool` (cursor warping on multi-monitor setups)
+### Optional: cursor warping on multi-monitor setups
 
 On Wayland, `workspace.activeScreen` tracks the screen that the pointer is
 currently on -- not the screen that has keyboard focus.  When you switch to a
@@ -118,25 +118,24 @@ This causes the app launcher (`Super` / `Meta` key) and other pointer-screen
 features in Plasma to open on the wrong monitor.
 
 Aerogel fixes this by warping the cursor to the centre of the target screen
-whenever focus crosses a monitor boundary.  Because KWin scripting has no
-built-in cursor-warp API on Wayland, the warp is delegated to
-[`ydotool`](https://github.com/ReimuNotMoe/ydotool) through a small D-Bus
-helper service (`aerogel-cursor`).
+whenever focus crosses a monitor boundary.  The warp is handled by
+`aerogel-cursor`, a small D-Bus helper service included in this repo.  It uses
+[`python-evdev`](https://python-evdev.readthedocs.io/) to create a virtual
+input device with true absolute-coordinate positioning (no relative-move hacks,
+no sensitivity to mouse acceleration).
 
-**Without `ydotool`** aerogel works correctly on a single monitor, and
+**Without `aerogel-cursor`** aerogel works correctly on a single monitor, and
 multi-monitor workspace switching still works -- but the pointer will not follow
 focus, so pointer-driven Plasma features may open on the wrong screen.
 
-**With `ydotool`** install `aerogel-cursor` (provided by this repo).  It ships
-a D-Bus activation file so the session bus starts it automatically on the first
-warp call -- no `systemctl enable` needed.  It also auto-starts `ydotoold` on
-its first invocation if the socket is absent.
+**With `aerogel-cursor`** installed, the session bus starts it automatically on
+the first warp call via D-Bus activation -- no `systemctl enable` needed.
 
 The only manual step is adding your user to the `input` group (required for
 `/dev/uinput` access):
 
 ```bash
-# Arch / CachyOS (ydotool ships the udev rule; just add the group)
+# Arch / CachyOS (add the user to the input group, then re-login)
 sudo usermod -aG input $USER
 # Log out and back in (or reboot)
 
@@ -157,7 +156,7 @@ together. The naming is consistent across Nix and AUR.
 | **`aerogel`** | Meta-package -- installs all components below |
 | `kwin-scripts-aerogel` | BSP tiling KWin script |
 | `plasma6-applets-aerogel-pager` | Plasma panel workspace pager widget |
-| `aerogel-cursor` | D-Bus cursor-warp service for multi-monitor Wayland (requires `ydotool`) |
+| `aerogel-cursor` | D-Bus cursor-warp service for multi-monitor Wayland (requires `input` group for `/dev/uinput`) |
 | `aerogel-icons` | Custom icon for KDE integration (hicolor icon theme) |
 
 ## Installation
@@ -177,7 +176,7 @@ inputs.aerogel = {
 
 ```nix
 # configuration.nix (NixOS system config)
-# Sets up /dev/uinput udev rule + adds users to the input group for ydotool.
+# Sets up /dev/uinput udev rule + adds users to the input group.
 imports = [ inputs.aerogel.nixosModules.default ];
 aerogel.enable = true;
 aerogel.users  = [ "youruser" ];
@@ -188,7 +187,7 @@ aerogel.users  = [ "youruser" ];
 # Installs KWin script, widget, aerogel-cursor; enables the script in kwinrc.
 imports = [ inputs.aerogel.homeManagerModules.default ];
 aerogel.enable     = true;
-aerogel.cursorWarp = true;   # default: true -- requires ydotool + input group
+aerogel.cursorWarp = true;   # default: true -- requires input group for /dev/uinput
 aerogel.innerGap   = 8;      # default: 8
 aerogel.outerGap   = 8;      # default: 8
 ```
@@ -240,7 +239,7 @@ yay -S aerogel
 # Or install individually
 yay -S kwin-scripts-aerogel
 yay -S plasma6-applets-aerogel-pager
-yay -S aerogel-cursor    # optional: cursor warping (pulls in ydotool, python-dbus, python-gobject)
+yay -S aerogel-cursor    # optional: cursor warping (needs python-evdev, python-dbus, python-gobject)
 yay -S aerogel-icons     # optional: custom icon in KDE settings / widget explorer
 ```
 
@@ -330,7 +329,7 @@ can be overridden in System Settings or via `kwriteconfig6`.
 
 - **BSP layout** -- windows tile automatically in alternating H/V splits
 - **Wayland native** -- handles async geometry, maximized windows, panel loading
-- **Per-monitor workspaces** -- AeroSpace-style: each monitor has its own active workspace; `Super+Shift+Tab` moves the focused workspace (with its windows) to the next monitor, restoring the monitor's last-used workspace or a new empty one; cursor warps to the target monitor on focus switch (requires `ydotool`)
+- **Per-monitor workspaces** -- AeroSpace-style: each monitor has its own active workspace; `Super+Shift+Tab` moves the focused workspace (with its windows) to the next monitor, restoring the monitor's last-used workspace or a new empty one; cursor warps to the target monitor on focus switch (requires `aerogel-cursor`)
 - **Keyboard shortcuts** -- vim-style and arrow-key focus/swap, workspace switching, fullscreen, close, float, resize
 - **Float toggle** -- `Super+Space` exempts a window from tiling (floats above, centred)
 - **Fullscreen** -- `Super+F` toggles fullscreen; fullscreen windows are untiled and retiled on restore
@@ -447,7 +446,7 @@ widget/                          Plasma pager widget
       NumberBox.qml              Themed rounded rectangle with workspace label
       FullRep.qml                Workspace grid (present but not used in current flow)
 scripts/
-  aerogel-cursor.py              D-Bus cursor warp service (ydotool)
+  aerogel-cursor.py              D-Bus cursor warp service (python-evdev UInput)
 assets/
   aerogel-logo.svg               Standalone SVG logo (dark background)
   aerogel-logo.png               512x512 PNG render (for KDE Store)

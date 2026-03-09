@@ -28,6 +28,18 @@
   time.timeZone = "Europe/Sofia";
   i18n.defaultLocale = "en_US.UTF-8";
 
+  # ── Graphics ─────────────────────────────────────────────────────────────────
+  # QXL is a 2D-only paravirtual GPU with no Vulkan support.  Without this,
+  # Mesa's default driver selection tries Zink (OpenGL-over-Vulkan), which
+  # calls vkEnumeratePhysicalDevices(), finds zero Vulkan devices, and fails
+  # with "ZINK: failed to choose pdev".  plasmashell then segfaults trying to
+  # initialise a GL context.
+  #
+  # Force llvmpipe (software OpenGL) so KWin and plasmashell get a working
+  # GL context without needing hardware GPU acceleration.
+  hardware.graphics.enable = true;
+  environment.variables.LIBGL_ALWAYS_SOFTWARE = "1";
+
   # ── KDE Plasma 6 ────────────────────────────────────────────────────────────
   services.desktopManager.plasma6.enable = true;
 
@@ -65,7 +77,7 @@
 
   # ── Aerogel system-level support (udev + input group) ───────────────────────
   # The nixosModules.default module sets the udev rule for /dev/uinput and
-  # adds listed users to the "input" group -- both required for ydotoold.
+  # adds listed users to the "input" group -- required for aerogel-cursor.
   aerogel.enable = true;
   aerogel.users  = [ "aerogel" ];
 

@@ -5,7 +5,7 @@
 #   aerogel                         meta-package (pulls in all components)
 #   kwin-scripts-aerogel            KWin BSP tiling script
 #   plasma6-applets-aerogel-pager   Plasma panel workspace pager widget
-#   aerogel-cursor                  D-Bus cursor-warp service (ydotool)
+#   aerogel-cursor                  D-Bus cursor-warp service (python-evdev)
 #   aerogel-icons                   Hicolor icon for KDE integration
 
 pkgbase=aerogel
@@ -63,13 +63,14 @@ package_plasma6-applets-aerogel-pager() {
 
 package_aerogel-cursor() {
   pkgdesc="Aerogel cursor-warp D-Bus service for multi-monitor Wayland"
-  depends=('python' 'python-dbus' 'python-gobject' 'ydotool')
+  depends=('python' 'python-dbus' 'python-gobject' 'python-evdev')
 
   cd "$pkgbase-$pkgver"
 
   # Install the cursor warp script.
-  # On Arch, ydotool/python are at standard /usr/bin/ paths -- the
-  # #!/usr/bin/env python3 shebang works as-is (no path rewriting needed).
+  # Uses python-evdev UInput with ABS_X/ABS_Y axes for true absolute
+  # cursor positioning (no ydotool dependency).
+  # #!/usr/bin/env python3 shebang works as-is on Arch.
   install -Dm755 scripts/aerogel-cursor.py \
     "$pkgdir/usr/bin/aerogel-cursor"
 

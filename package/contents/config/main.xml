@@ -24,5 +24,23 @@
       <default>8</default>
     </entry>
 
+    <entry name="ignoreClass" type="String">
+      <label>Ignore Window Classes</label>
+      <whatsthis>Comma-separated list of WM_CLASS values to never tile (case-insensitive substring match). Example: "plasmashell,krunner"</whatsthis>
+      <default></default>
+    </entry>
+
+    <entry name="ignoreName" type="String">
+      <label>Ignore Window Names</label>
+      <whatsthis>Comma-separated list of resource names to never tile (case-insensitive substring match).</whatsthis>
+      <default></default>
+    </entry>
+
+    <entry name="ignoreCaption" type="String">
+      <label>Ignore Window Captions</label>
+      <whatsthis>Comma-separated list of caption substrings to never tile (case-insensitive). Example: "Copied to clipboard,Picture-in-Picture"</whatsthis>
+      <default></default>
+    </entry>
+
   </group>
 </kcfg>

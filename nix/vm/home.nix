@@ -58,64 +58,6 @@
   ];
 
   # ── Shortcut conflict resolution ────────────────────────────────────────────
-  # Aerogel bindings and the KDE defaults they displace:
-  #
-  #   Meta+H/J/K/L               focus (vim)
-  #   Meta+Left/Right/Up/Down    focus (arrows) -- displaces KWin quick-tile/maximize/minimize
-  #   Meta+Shift+H/J/K/L         swap (vim)
-  #   Meta+Shift+Left/Right/Up/Down  swap (arrows) -- displaces KWin quick-tile variants
-  #   Meta+1-9,0                 desktop switch -- displaces plasmashell task manager entries
-  #   Meta+Shift+1-9,0           move window to desktop
-  #   Meta+Space                 float toggle
-  #   Meta+Shift+Tab             move workspace to monitor
-  #   Meta+F                     fullscreen toggle
-  #   Meta+Q                     close window
-  #   Meta+Minus / Meta+Equal    resize smart
-  #
-  programs.plasma.shortcuts = {
-    # Meta+L: "Lock Session" -- clear so aerogel-focus-right works.
-    "ksmserver"."Lock Session" = [];
-
-    # Meta+0: "Zoom to Actual Size" -- clear so aerogel-desktop-10 works.
-    "kwin"."view_actual_size" = [];
-
-    # Meta+Left/Right: KWin "Quick Tile" left/right -- clear for arrow focus.
-    "kwin"."Window Quick Tile Left"  = [];
-    "kwin"."Window Quick Tile Right" = [];
-
-    # Meta+Up/Down: KWin maximize/minimize -- clear for arrow focus.
-    "kwin"."Window Maximize" = [];
-    "kwin"."Window Minimize" = [];
-
-    # Meta+Shift+Left/Right/Up/Down: KWin quick-tile corners/edges -- clear for arrow swap.
-    "kwin"."Window Quick Tile Top"          = [];
-    "kwin"."Window Quick Tile Bottom"       = [];
-    "kwin"."Window Quick Tile Top Left"     = [];
-    "kwin"."Window Quick Tile Top Right"    = [];
-    "kwin"."Window Quick Tile Bottom Left"  = [];
-    "kwin"."Window Quick Tile Bottom Right" = [];
-
-    # Meta+Shift+Tab: "Walk Through Windows (Reverse)" -- keep only Alt+Shift+Tab,
-    # removing Meta+Shift+Tab from both current and default so aerogel can claim it.
-    # Meta+Tab ("Walk Through Windows") is intentionally left alone.
-    "kwin"."Walk Through Windows (Reverse)" = [ "Alt+Shift+Tab" ];
-
-    # Meta+1..9: plasmashell "Activate Task Manager Entry N" -- clear all.
-    "plasmashell"."activate task manager entry 1"  = [];
-    "plasmashell"."activate task manager entry 2"  = [];
-    "plasmashell"."activate task manager entry 3"  = [];
-    "plasmashell"."activate task manager entry 4"  = [];
-    "plasmashell"."activate task manager entry 5"  = [];
-    "plasmashell"."activate task manager entry 6"  = [];
-    "plasmashell"."activate task manager entry 7"  = [];
-    "plasmashell"."activate task manager entry 8"  = [];
-    "plasmashell"."activate task manager entry 9"  = [];
-    "plasmashell"."activate task manager entry 10" = [];
-
-    # Meta+Minus: KWin "Zoom Out" -- clear so aerogel-resize-shrink works.
-    "kwin"."view_zoom_out" = [];
-
-    # Meta+= / Meta++: KWin "Zoom In" -- clear so aerogel-resize-grow works.
-    "kwin"."view_zoom_in" = [];
-  };
+  # All shortcut conflicts are now cleared by the aerogel home-manager module
+  # (nix/hm-module.nix).  No manual clearing needed here.
 }

@@ -34,6 +34,10 @@
 #   nix run .#vm-deploy-kwin-script    deploy only KWin script to running VM
 #   nix run .#vm-deploy-widget         deploy only widget to running VM
 #
+#   Diagnostics
+#   nix run .#window-dump              dump all current KWin windows (class, name, flags)
+#   nix run .#window-dump -- watch     continuously log new/removed windows
+#
 # vmBin: the NixOS VM build output (null on non-Linux systems).
 { pkgs, vmBin ? null }:
 
@@ -173,7 +177,7 @@ let
           \[*\]|"") continue ;;
         esac
         group="$(echo "$raw_key" | cut -d'/' -f1)"
-        key="$(echo "$raw_key" | sed 's|.*/||')"
+        key="''${raw_key##*/}"
         if [ -n "$raw_value" ]; then
           ${kwrite} --file kglobalshortcutsrc --group "$group" --key "$key" "$raw_value"
         fi
@@ -437,4 +441,87 @@ in
       ${cdRepo}
       ${disableShortcutOps}
     '';
+
+  # ── Window inspector ─────────────────────────────────────────────────────────
+  # Dumps all KWin-managed windows with their properties relevant to aerogel's
+  # WindowFilter (resourceClass, resourceName, caption, type flags).
+  # Useful for finding the right ignoreClass/ignoreName/ignoreCaption values.
+  #
+  #   nix run .#window-dump           one-shot dump of all current windows
+  #   nix run .#window-dump -- watch  continuous: logs new windows as they appear
+  #
+  # Output goes to stdout AND the KWin journal (journalctl --user -t kwin_wayland).
+
+  window-dump = let
+    dumpScript = pkgs.writeText "aerogel-window-dump.js" ''
+      const wins = workspace.windowList();
+      for (let i = 0; i < wins.length; i++) {
+        const w = wins[i];
+        print('[aerogel-window-dump] class=' + w.resourceClass
+          + ' | name=' + w.resourceName
+          + ' | caption=' + w.caption
+          + ' | normal=' + w.normalWindow
+          + ' | popup=' + w.popupWindow
+          + ' | transient=' + w.transient
+          + ' | dialog=' + w.dialog
+          + ' | special=' + w.specialWindow
+          + ' | managed=' + w.managed
+          + ' | dock=' + w.dock
+          + ' | desktop=' + w.desktopWindow
+          + ' | moveable=' + w.moveable
+          + ' | resizeable=' + w.resizeable
+          + ' | skipSwitcher=' + w.skipSwitcher);
+      }
+    '';
+    watchScript = pkgs.writeText "aerogel-window-watch.js" ''
+      function dump(w) {
+        print('[aerogel-window-dump] class=' + w.resourceClass
+          + ' | name=' + w.resourceName
+          + ' | caption=' + w.caption
+          + ' | normal=' + w.normalWindow
+          + ' | popup=' + w.popupWindow
+          + ' | transient=' + w.transient
+          + ' | dialog=' + w.dialog
+          + ' | special=' + w.specialWindow
+          + ' | managed=' + w.managed
+          + ' | dock=' + w.dock
+          + ' | desktop=' + w.desktopWindow
+          + ' | moveable=' + w.moveable
+          + ' | resizeable=' + w.resizeable
+          + ' | skipSwitcher=' + w.skipSwitcher);
+      }
+      print('[aerogel-window-dump] watching for new windows... (Ctrl+C to stop)');
+      workspace.windowAdded.connect(function(w) {
+        print('[aerogel-window-dump] ── NEW WINDOW ──');
+        dump(w);
+      });
+      workspace.windowRemoved.connect(function(w) {
+        print('[aerogel-window-dump] ── REMOVED: ' + w.resourceClass + ' / ' + w.caption + ' ──');
+      });
+      // Also dump all current windows on start.
+      var wins = workspace.windowList();
+      for (var i = 0; i < wins.length; i++) dump(wins[i]);
+      print('[aerogel-window-dump] ── ' + wins.length + ' existing windows dumped, now watching ──');
+    '';
+    qdbus = "${pkgs.kdePackages.qttools}/bin/qdbus";
+  in mkApp "aerogel-window-dump" [ pkgs.kdePackages.qttools pkgs.systemd ] ''
+    MODE="''${1:-dump}"
+    SCRIPT_FILE="${dumpScript}"
+    if [ "$MODE" = "watch" ]; then
+      SCRIPT_FILE="${watchScript}"
+    fi
+
+    SCRIPT_ID=$(${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$SCRIPT_FILE" "")
+    ${qdbus} org.kde.KWin "/Scripting/Script$SCRIPT_ID" org.kde.kwin.Script.run
+    sleep 0.3
+
+    if [ "$MODE" = "watch" ]; then
+      echo "aerogel-window-dump: watching for new windows (journal output)..."
+      echo "  Press Ctrl+C to stop."
+      echo ""
+      journalctl --user -t kwin_wayland -f --no-pager | grep --line-buffered 'aerogel-window-dump'
+    else
+      journalctl --user -t kwin_wayland --since '5s ago' --no-pager | grep 'aerogel-window-dump'
+    fi
+  '';
 }

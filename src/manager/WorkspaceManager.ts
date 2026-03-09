@@ -51,7 +51,7 @@
  *                      • dormant                   → activate on assigned monitor
  *                      • never seen                → assign to focused monitor
  *   Meta+Shift+N     Move focused window to workspace N
-  *   Meta+Shift+Tab   Move the focused workspace (with windows) to the next
+ *   Meta+Shift+Tab   Move the focused workspace (with windows) to the next
  *                    monitor.  The focused monitor falls back to its last
  *                    previously active workspace, or a new empty one.
  *                    Focus follows the workspace to the next monitor.
@@ -96,11 +96,25 @@ class WorkspaceManager {
 
     private readonly floatingWindows: Set<string> = new Set();
 
+    /** User-configured patterns for windows to never tile. */
+    private readonly ignoreLists: IgnoreLists;
+
     /**
      * Guard flag.  When true, onWindowOutputChanged / onWindowDesktopsChanged
      * skip processing to prevent re-entry during bulk operations.
      */
     private movingWindows: boolean = false;
+
+    /** Guards onWindowActivated from overwriting lastFocusedScreen with stale output.name during focusScreen(). */
+    private focusingScreen: boolean = false;
+
+    /**
+     * Whether the KWin "slide" desktop-switch effect was loaded when aerogel
+     * started.  Aerogel changes currentDesktop frequently (every focus change,
+     * cursor-crosses-monitor, etc.) which triggers the slide animation and
+     * makes the desktop unusable.  We unload it on init and restore on destroy.
+     */
+    private slideWasLoaded: boolean = false;
 
     private readonly workspaceConnections: {
         signal: QSignal<unknown[]>;
@@ -111,6 +125,11 @@ class WorkspaceManager {
 
     constructor(config: AerogelConfig) {
         this.gaps = GapConfig.fromConfig(config);
+        this.ignoreLists = {
+            classes:  config.ignoreClass,
+            names:    config.ignoreName,
+            captions: config.ignoreCaption,
+        };
     }
 
     // =========================================================================
@@ -146,7 +165,7 @@ class WorkspaceManager {
         // Tile existing windows.
         const existing = workspace.windowList();
         for (let i = 0; i < existing.length; i++) {
-            if (WindowFilter.shouldTileNow(existing[i], this.floatingWindows)) {
+            if (WindowFilter.shouldTileNow(existing[i], this.floatingWindows, this.ignoreLists)) {
                 this.tileWindow(existing[i]);
             }
         }
@@ -160,11 +179,76 @@ class WorkspaceManager {
         // or the first window appeared after startup finished).
         this.syncDesktopAndVisibility();
 
+        // Inform the cursor service of the compositor bounding box so it can
+        // configure its UInput device axes.  Safe to call before any Warp().
+        this.sendCursorBounds();
+
+        // Disable the desktop-switch slide animation.  Aerogel changes
+        // currentDesktop on every focus change / cursor-crosses-monitor, which
+        // triggers the slide effect and makes the desktop visually unusable.
+        // We check whether it was loaded first so we can restore it on destroy
+        // if the user had it enabled.
+        callDBus(
+            "org.kde.KWin", "/Effects", "org.kde.kwin.Effects",
+            "isEffectLoaded", "slide",
+            (loaded: boolean) => {
+                this.slideWasLoaded = loaded;
+                if (loaded) {
+                    callDBus(
+                        "org.kde.KWin", "/Effects", "org.kde.kwin.Effects",
+                        "unloadEffect", "slide",
+                    );
+                    console.log("[aerogel] disabled slide effect (will restore on destroy).");
+                }
+            },
+        );
+
         console.log("[aerogel] initialised. tiled", this.totalWindowCount(),
                     "windows across", screens.length, "screens.");
     }
 
     destroy(): void {
+        // ── Restore window state ─────────────────────────────────────────────
+        // Un-pin all pinned windows so KWin's session manager sees them on
+        // their real desktop.  Without this, pinned windows (desktops=[]) may
+        // not get their close-confirmation dialogs shown during shutdown.
+        //
+        // Tiled windows: restore from tree.
+        for (const [ws, tree] of this.trees) {
+            const desk = this.desktopForWorkspace(ws);
+            if (!desk) continue;
+            const leaves = tree.leaves();
+            for (const leaf of leaves) {
+                try { leaf.window.desktops = [desk]; } catch (_) { /**/ }
+            }
+        }
+        // Untiled pinned windows (fullscreen, floating): restore via windowList.
+        if (this.pinnedWindows.size > 0) {
+            const allWins = workspace.windowList();
+            for (let i = 0; i < allWins.length; i++) {
+                const w = allWins[i];
+                if (!this.pinnedWindows.has(w.internalId)) continue;
+                const screenName = w.output.name;
+                const screenWs   = this.monitorWorkspace.get(screenName);
+                if (screenWs === undefined) continue;
+                const desk = this.desktopForWorkspace(screenWs);
+                if (desk) {
+                    try { w.desktops = [desk]; } catch (_) { /**/ }
+                }
+            }
+        }
+        this.pinnedWindows.clear();
+
+        // ── Restore slide effect ─────────────────────────────────────────────
+        if (this.slideWasLoaded) {
+            callDBus(
+                "org.kde.KWin", "/Effects", "org.kde.kwin.Effects",
+                "loadEffect", "slide",
+            );
+            console.log("[aerogel] restored slide effect.");
+        }
+
+        // ── Disconnect signals ───────────────────────────────────────────────
         for (const c of this.workspaceConnections) c.signal.disconnect(c.handler);
         this.workspaceConnections.length = 0;
         for (const [, conns] of this.windowConnections) {
@@ -183,7 +267,7 @@ class WorkspaceManager {
 
     private onWindowAdded(window: KWinWindow): void {
         try {
-            if (!WindowFilter.shouldTileNow(window, this.floatingWindows)) {
+            if (!WindowFilter.shouldTileNow(window, this.floatingWindows, this.ignoreLists)) {
                 if (window.dock) this.retileAll();
                 return;
             }
@@ -212,10 +296,9 @@ class WorkspaceManager {
             }
 
             const screen = window.output.name;
-            if (screen !== this.lastFocusedScreen) {
+            // focusingScreen: window.output.name is stale on Wayland after sendClientToScreen.
+            if (!this.focusingScreen && screen !== this.lastFocusedScreen) {
                 this.lastFocusedScreen = screen;
-                // Focus moved to a different monitor -- update currentDesktop
-                // so the widget shows the right workspace.
                 this.syncDesktopAndVisibility();
             }
         } catch (e) { console.error("[aerogel] onWindowActivated:", e); }
@@ -229,7 +312,7 @@ class WorkspaceManager {
         try {
             if (window.minimized) {
                 this.untileWindow(window);
-            } else if (WindowFilter.shouldTileNow(window, this.floatingWindows)) {
+            } else if (WindowFilter.shouldTileNow(window, this.floatingWindows, this.ignoreLists)) {
                 this.tileWindow(window);
                 this.retileWindowTree(window);
                 this.syncDesktopAndVisibility();
@@ -240,10 +323,22 @@ class WorkspaceManager {
     private onWindowFullScreenChanged(window: KWinWindow): void {
         try {
             if (window.fullScreen) {
-                this.untileWindow(window);
-            } else if (WindowFilter.shouldTileNow(window, this.floatingWindows)) {
+                // Guard: toggleFullscreen() may have already removed the window
+                // from the tree before setting fullScreen=true.  Only untile if
+                // the window is still in a tree.
+                if (this.windowWorkspace(window) !== null) {
+                    this.untileWindow(window);
+                }
+            } else if (WindowFilter.shouldTileNow(window, this.floatingWindows, this.ignoreLists)) {
+                // Handles app-initiated fullscreen exit (e.g. video player
+                // leaving fullscreen on its own).  For Meta+F toggled exit,
+                // toggleFullscreen() re-tiles directly because untileWindow
+                // already disconnected this handler.
+                //
+                // This handler fires because fullScreenChanged fired, so
+                // window.fullScreen is already false -- no async issue here.
                 this.tileWindow(window);
-                this.retileWindowTree(window);
+                this.retileAll();
                 this.syncDesktopAndVisibility();
             }
         } catch (e) { console.error("[aerogel] onWindowFullScreenChanged:", e); }
@@ -267,6 +362,20 @@ class WorkspaceManager {
             const newScreen = window.output.name;
             const newWs = this.monitorWorkspace.get(newScreen);
             if (newWs === undefined) return;
+
+            // If the window is already in the correct workspace for its new
+            // screen (e.g. moved by moveWorkspaceToNextMonitor while
+            // movingWindows was true, with the signal delivered late), the
+            // tree is already correct -- just retile, do not reinsert.
+            // Reinserting would rebuild the BSP linearly, destroying the
+            // existing layout.
+            const currentWs = this.windowWorkspace(window);
+            if (currentWs === newWs) {
+                this.retileAll();
+                this.syncDesktopAndVisibility();
+                return;
+            }
+
             this.untileWindowNoRetile(window);
             this.insertIntoWorkspace(window, newWs);
             this.retileAll();
@@ -370,6 +479,7 @@ class WorkspaceManager {
         }
         this.retileAll();
         this.syncDesktopAndVisibility();
+        this.sendCursorBounds();
     }
 
     /**
@@ -389,19 +499,13 @@ class WorkspaceManager {
         if (!screen) return;
         const screenName = screen.name;
 
-        // No change -- bail out immediately (this fires on every mouse move).
         if (screenName === this.lastFocusedScreen) return;
 
-        // Only update if this screen is known to aerogel.
         const ws = this.monitorWorkspace.get(screenName);
         if (ws === undefined) return;
 
         this.lastFocusedScreen = screenName;
-
-        // Ensure the KWin desktop for this workspace exists before syncing.
-        // On fresh boot with no windows, desktops beyond #1 may not have been
-        // created yet, causing desktopForWorkspace() to return null and the
-        // widget to show nothing.
+        // ensureDesktops: on fresh boot desktops beyond #1 may not exist yet.
         this.ensureDesktops(ws);
         this.syncDesktopAndVisibility();
     }
@@ -424,19 +528,12 @@ class WorkspaceManager {
             // we set currentDesktop in syncDesktopAndVisibility.
             this.ensureDesktops(n);
 
-            // Already active on some screen?
             const host = this.activeScreenForWorkspace(n);
             if (host) {
-                this.focusScreen(host);
+                this.focusScreen(host, true);
                 return;
             }
-            // Dormant or unknown -- decide which screen to show it on.
-            //
-            // Rules (in priority order):
-            //  1. If the workspace has windows and is assigned to a screen that
-            //     is currently active, restore it there (home-screen semantics).
-            //  2. Otherwise (unassigned, or assigned but empty) show it on the
-            //     focused monitor -- empty workspaces have no home worth honouring.
+            // Dormant: restore to home screen if it has windows, otherwise use the focused monitor.
             const assignedScreen = this.workspaceMonitor.get(n);
             const wsTree = this.trees.get(n);
             const wsHasWindows = wsTree !== undefined && !wsTree.isEmpty();
@@ -444,7 +541,7 @@ class WorkspaceManager {
                 ? assignedScreen
                 : (this.lastFocusedScreen || workspace.activeScreen.name);
             this.activateWorkspaceOnScreen(n, targetScreen);
-            this.focusScreen(targetScreen);
+            this.focusScreen(targetScreen, true);
         } catch (e) { console.error("[aerogel] switchToDesktop:", e); }
     }
 
@@ -542,14 +639,9 @@ class WorkspaceManager {
                     }
                 }
 
-                // ── History bookkeeping (must happen before map updates) ────────
-                //
-                // (a) The WS currently active on nextScreen is being displaced.
-                //     Only record it in nextScreen's history if it is actually
-                //     homed on nextScreen (workspaceMonitor[displacedWs] === nextScreen).
-                //     If it's a visitor (homed elsewhere after a previous MST), do NOT
-                //     push it -- it belongs to its real home screen's history, not here.
-                //     If the displaced WS is empty, prune it so the number is reused.
+                // History bookkeeping (before map updates).
+                // Only push to history if the WS is homed on that screen -- visitors
+                // (re-homed by a prior MST) belong to their real home's history.
                 const displacedWs = this.monitorWorkspace.get(nextScreenName);
                 if (displacedWs !== undefined) {
                     if (this.workspaceMonitor.get(displacedWs) === nextScreenName) {
@@ -558,40 +650,35 @@ class WorkspaceManager {
                     this.pruneEmptyWorkspace(displacedWs);
                 }
 
-                // (b) focusedWs is leaving the focused screen.  Only record it in
-                //     the focused screen's history if it is actually homed there
-                //     (workspaceMonitor[focusedWs] === focused).  If it is a visitor
-                //     that arrived from another monitor via a previous MST, do NOT
-                //     push it -- it belongs to its real home's history, not here.
                 if (this.workspaceMonitor.get(focusedWs) === focused) {
                     this.pushMonitorHistory(focused, focusedWs);
                 }
 
-                // ── Update maps ────────────────────────────────────────────────
-                // focusedWs is now the active workspace on nextScreen.
                 this.workspaceMonitor.set(focusedWs, nextScreenName);
                 this.monitorWorkspace.set(nextScreenName, focusedWs);
 
-                // ── 2. Find a replacement workspace for the focused monitor ────
-                // Pop the most recent still-dormant non-empty WS from the focused
-                // monitor's history (excluding the WS we just moved away).
                 const replacement = this.popMonitorHistory(focused, focusedWs);
 
                 this.workspaceMonitor.set(replacement, focused);
                 this.monitorWorkspace.set(focused, replacement);
                 this.ensureDesktops(replacement);
 
-                // Retile and sync while movingWindows is still true so that any
-                // outputChanged signals queued by sendClientToScreen are suppressed
-                // until after the layout is correct.
+                // Retile while movingWindows=true so late outputChanged signals are suppressed.
                 this.retileAll();
                 this.syncDesktopAndVisibility();
             } finally {
                 this.movingWindows = false;
             }
 
-            // Focus follows the moved workspace to the next monitor.
-            this.focusScreen(nextScreenName);
+            // Pre-set lastFocusedScreen before the warp so focusScreen(warpCursor=false) skips its own warp.
+            this.lastFocusedScreen = nextScreenName;
+            const nextScreenObj2 = this.findScreenByName(nextScreenName);
+            if (nextScreenObj2) {
+                const g = nextScreenObj2.geometry;
+                callDBus("org.aerogel.Cursor", "/org/aerogel/Cursor", "org.aerogel.Cursor",
+                         "Warp", Math.round(g.x + g.width / 2), Math.round(g.y + g.height / 2));
+            }
+            this.focusScreen(nextScreenName, false);
         } catch (e) { console.error("[aerogel] moveWorkspaceToNextMonitor:", e); }
     }
 
@@ -638,19 +725,14 @@ class WorkspaceManager {
             for (let i = stack.length - 1; i >= 0; i--) {
                 const candidate = stack[i];
                 if (candidate === excludeWs || activeWs.has(candidate)) continue;
-                // Only restore workspaces still homed on this screen.
-                // A stale entry exists when a WS was once active here but has
-                // since been re-homed to another monitor via MST.  Pulling it
-                // back would cause a swap instead of a move.
+                    // Prune stale entries: re-homed (via MST) or emptied since push.
                 if (this.workspaceMonitor.get(candidate) !== screenName) {
-                    stack.splice(i, 1); // prune stale entry
+                    stack.splice(i, 1);
                     continue;
                 }
-                // Only restore if it still has windows (guard against a workspace
-                // that became empty after being pushed to history).
                 const tree = this.trees.get(candidate);
                 if (!tree || tree.isEmpty()) {
-                    stack.splice(i, 1); // prune stale entry
+                    stack.splice(i, 1);
                     continue;
                 }
                 stack.splice(i, 1);
@@ -658,23 +740,18 @@ class WorkspaceManager {
             }
         }
 
-        // No usable history -- before allocating a brand-new number, scan known
-        // workspaces whose home is THIS screen for any that are dormant and
-        // non-empty.  This catches the case where a workspace (e.g. WS1) exists
-        // and belongs here but was never pushed to history (e.g. initial state).
-        // We must restrict to workspaces homed on screenName -- otherwise we'd
-        // poach workspaces that belong to other monitors (causing a swap, not a
-        // move).
+        // No usable history -- scan dormant workspaces homed on this screen.
+        // Prefer non-empty; fall back to empty to avoid minting new numbers indefinitely.
+        let emptyFallback: number | null = null;
         for (const [ws, home] of this.workspaceMonitor) {
             if (home !== screenName) continue;
             if (ws === excludeWs || activeWs.has(ws)) continue;
             const tree = this.trees.get(ws);
             if (tree && !tree.isEmpty()) return ws;
+            if (emptyFallback === null) emptyFallback = ws;
         }
+        if (emptyFallback !== null) return emptyFallback;
 
-        // Truly no usable workspace -- allocate a brand-new number.
-        // Only skip numbers that are already known to aerogel so we don't
-        // clobber any existing workspace.
         let n = 1;
         while (this.workspaceMonitor.has(n) || activeWs.has(n)) n++;
         return n;
@@ -701,7 +778,12 @@ class WorkspaceManager {
             const tree = this.trees.get(ws);
             if (!tree) return;
             const nb = tree.findNeighbor(active, dir);
-            if (nb) workspace.activeWindow = nb.window;
+            if (nb) {
+                workspace.activeWindow = nb.window;
+                const g = nb.window.frameGeometry;
+                callDBus("org.aerogel.Cursor", "/org/aerogel/Cursor", "org.aerogel.Cursor",
+                         "Warp", Math.round(g.x + g.width / 2), Math.round(g.y + g.height / 2));
+            }
         } catch (e) { console.error("[aerogel] focusDirection:", e); }
     }
 
@@ -761,7 +843,40 @@ class WorkspaceManager {
     toggleFullscreen(): void {
         try {
             const a = workspace.activeWindow;
-            if (a) a.fullScreen = !a.fullScreen;
+            if (!a) return;
+
+            if (!a.fullScreen) {
+                // Untile before setting fullScreen=true: if aerogel still owns the
+                // geometry when KWin tries to apply fullscreen, the two fight and
+                // leave the window in a mid-state with the panel still visible.
+                if (this.windowWorkspace(a) !== null) {
+                    this.untileWindow(a);
+                    this.retileAll();
+                    this.syncDesktopAndVisibility();
+                }
+                a.fullScreen = true;
+            } else {
+                // Exiting fullscreen: fullScreen=false is async on Wayland, so attach
+                // a one-shot fullScreenChanged handler before flipping the flag.
+                // The entry path also disconnected all window signals via untileWindow,
+                // so we cannot rely on onWindowFullScreenChanged firing here.
+                const win = a;
+                const floating = this.floatingWindows;
+                const ignoreLists = this.ignoreLists;
+                const fsHandler = () => {
+                    try {
+                        win.fullScreenChanged.disconnect(fsHandler);
+                        if (!win.fullScreen
+                            && WindowFilter.shouldTileNow(win, floating, ignoreLists)) {
+                            this.tileWindow(win);
+                            this.retileAll();
+                            this.syncDesktopAndVisibility();
+                        }
+                    } catch (e) { console.error("[aerogel] toggleFullscreen exit:", e); }
+                };
+                a.fullScreenChanged.connect(fsHandler);
+                a.fullScreen = false;
+            }
         } catch (e) { console.error("[aerogel] toggleFullscreen:", e); }
     }
 
@@ -808,17 +923,12 @@ class WorkspaceManager {
 
         this.movingWindows = true;
         try {
-            // Hide old workspace on this screen.
             const oldWs = this.monitorWorkspace.get(screenName);
             if (oldWs !== undefined && oldWs !== wsNum) {
                 this.monitorWorkspace.delete(screenName);
-                // workspaceMonitor[oldWs] keeps pointing here as its home.
-                // Record in per-monitor history so moveWorkspaceToNextMonitor()
-                // can restore the last-used workspace on this monitor.
                 this.pushMonitorHistory(screenName, oldWs);
             }
 
-            // Move workspace's windows to this screen.
             const tree = this.trees.get(wsNum);
             if (tree && !tree.isEmpty()) {
                 const leaves = tree.leaves();
@@ -827,7 +937,6 @@ class WorkspaceManager {
                 }
             }
 
-            // Update maps.
             this.workspaceMonitor.set(wsNum, screenName);
             this.monitorWorkspace.set(screenName, wsNum);
 
@@ -843,30 +952,15 @@ class WorkspaceManager {
     // =========================================================================
 
     /**
-     * Synchronise KWin virtual desktops and window desktop assignments so:
-     *
-     *  1. workspace.currentDesktop = focused monitor's active workspace's KWin desktop
-     *     → widget reads this to show the right number
-     *
-     *  2. Focused monitor's windows  → desktops = [their real desktop]
-     *     (matches currentDesktop → KWin renders them)
-     *
-     *  3. Unfocused monitors' active windows → desktops = []
-     *     (all-desktops flag → KWin always renders them regardless of currentDesktop)
-     *
-     *  4. Dormant workspace windows → desktops = [their real desktop]
-     *     (real desktop ≠ currentDesktop → KWin hides them)
-     *
+     * Synchronise KWin virtual desktops and window desktop assignments.
+     * See the module-level doc block for the full visibility model.
      * Must be called after any workspace switch, focus change, or window move.
-     * Safe to call at any time AFTER init() -- never called during init() to
-     * avoid triggering the plasmashell lastScreen() crash.
      */
     private syncDesktopAndVisibility(): void {
         const focusedScreen = this.lastFocusedScreen || workspace.activeScreen.name;
         const focusedWs     = this.monitorWorkspace.get(focusedScreen);
         if (focusedWs === undefined) return;
 
-        // Guard: preserve the caller's movingWindows state.
         const wasMoving = this.movingWindows;
         this.movingWindows = true;
         try {
@@ -880,7 +974,10 @@ class WorkspaceManager {
                     const leaves = tree.leaves();
                     for (const leaf of leaves) {
                         if (this.pinnedWindows.has(leaf.window.internalId)) {
-                            leaf.window.desktops = [desk];
+                            // Only write if currently pinned (desktops=[]).
+                            if (leaf.window.desktops.length === 0) {
+                                leaf.window.desktops = [desk];
+                            }
                         }
                     }
                 }
@@ -899,17 +996,61 @@ class WorkspaceManager {
                 for (const leaf of leaves) {
                     if (isActive && !isFocused) {
                         // Unfocused but visible → pin (all desktops).
-                        leaf.window.desktops = [];
+                        if (leaf.window.desktops.length !== 0) {
+                            leaf.window.desktops = [];
+                        }
                         this.pinnedWindows.add(leaf.window.internalId);
                     } else {
                         // Focused or dormant → assign real desktop.
-                        leaf.window.desktops = [desk];
+                        if (leaf.window.desktops.length !== 1
+                                || leaf.window.desktops[0].id !== desk.id) {
+                            leaf.window.desktops = [desk];
+                        }
                     }
                 }
             }
 
-            // 3. Set currentDesktop LAST -- after all window desktop assignments --
-            // so any KWin-internal currentDesktop reset triggered by step 2
+            // 3. Handle untiled windows (fullscreen, floating, ignored) -- not in any tree.
+            const tiledIds = new Set<string>();
+            for (const [, tree] of this.trees) {
+                for (const leaf of tree.leaves()) {
+                    tiledIds.add(leaf.window.internalId);
+                }
+            }
+            const allWins = workspace.windowList();
+            for (let i = 0; i < allWins.length; i++) {
+                const w = allWins[i];
+                if (!w.managed) continue;
+                if (tiledIds.has(w.internalId)) continue;
+                // Skip docks/panels -- KWin manages their visibility itself.
+                if (w.dock || w.desktopWindow) continue;
+
+                const screenName = w.output.name;
+                const screenWs   = this.monitorWorkspace.get(screenName);
+                if (screenWs === undefined) continue;
+
+                const isActiveScreen  = this.activeScreenForWorkspace(screenWs) !== null;
+                const isFocusedScreen = screenName === focusedScreen;
+                const desk = this.desktopForWorkspace(screenWs);
+                if (!desk) continue;
+
+                if (isActiveScreen && !isFocusedScreen) {
+                    // Unfocused active screen -- pin so window stays visible
+                    // regardless of currentDesktop.
+                    if (w.desktops.length !== 0) {
+                        w.desktops = [];
+                    }
+                    this.pinnedWindows.add(w.internalId);
+                } else {
+                    // Focused screen or dormant screen -- assign real desktop.
+                    if (w.desktops.length !== 1 || w.desktops[0].id !== desk.id) {
+                        w.desktops = [desk];
+                    }
+                }
+            }
+
+            // 4. Set currentDesktop LAST -- after all window desktop assignments --
+            // so any KWin-internal currentDesktop reset triggered by steps 2-3
             // (e.g. KWin following a window's desktop) is overridden by our value.
             // NOTE: ensureDesktops() is intentionally NOT called here to avoid
             // the createDesktop() signal race. Callers call ensureDesktops() first.
@@ -994,7 +1135,6 @@ class WorkspaceManager {
         if (!screenName) return null;
         const screen = this.findScreenByName(screenName);
         if (!screen) return null;
-        // ensureDesktops is safe here -- called after plasmashell is up.
         this.ensureDesktops(ws);
         const desk = this.desktopForWorkspace(ws);
         if (!desk) return null;
@@ -1005,62 +1145,79 @@ class WorkspaceManager {
     // Focus helpers
     // =========================================================================
 
-    private focusScreen(screenName: string): void {
+    /**
+     * Send the total compositor bounding box to the aerogel-cursor D-Bus
+     * service so it can configure its UInput device with the correct ABS_X /
+     * ABS_Y axis ranges.
+     *
+     * Called on init and on screensChanged.  The cursor service ignores the
+     * call if the bounds haven't changed, so duplicate calls are safe.
+     */
+    private sendCursorBounds(): void {
+        const screens = workspace.screenOrder;
+        let maxX = 0;
+        let maxY = 0;
+        for (let i = 0; i < screens.length; i++) {
+            const g = screens[i].geometry;
+            const right  = g.x + g.width;
+            const bottom = g.y + g.height;
+            if (right  > maxX) maxX = right;
+            if (bottom > maxY) maxY = bottom;
+        }
+        if (maxX > 0 && maxY > 0) {
+            callDBus(
+                "org.aerogel.Cursor",
+                "/org/aerogel/Cursor",
+                "org.aerogel.Cursor",
+                "SetBounds",
+                maxX, maxY,
+            );
+        }
+    }
+
+    private focusScreen(screenName: string, warpCursor: boolean = false): void {
         const ws = this.monitorWorkspace.get(screenName);
         if (ws === undefined) return;
 
-        // Warp the cursor to the centre of the target screen when crossing
-        // monitor boundaries.  This is required on Wayland because
-        // workspace.activeScreen tracks the screen under the pointer -- without
-        // a warp the pointer stays on the old monitor even after focus moves,
-        // so the app launcher (Meta key) and other pointer-screen logic open
-        // on the wrong monitor.
-        //
-        // The warp is performed via the aerogel-cursor D-Bus service
-        // (org.aerogel.Cursor / Warp), which delegates to ydotool(1).
-        // ydotool is an optional runtime dependency: if the service is not
-        // running the callDBus is a silent no-op.
-        if (screenName !== workspace.activeScreen.name) {
+        // Warp to screen centre (not window centre): frameGeometry is stale on Wayland
+        // immediately after sendClientToScreen / activateWorkspaceOnScreen.
+        if (warpCursor) {
             const screen = this.findScreenByName(screenName);
             if (screen) {
-                const desk = this.desktopForWorkspace(ws);
-                if (desk) {
-                    const rect = workspace.clientArea(
-                        ClientAreaOption.MaximizeArea, screen, desk
-                    );
-                    const cx = Math.round(rect.x + rect.width  / 2);
-                    const cy = Math.round(rect.y + rect.height / 2);
-                    callDBus(
-                        "org.aerogel.Cursor",
-                        "/org/aerogel/Cursor",
-                        "org.aerogel.Cursor",
-                        "Warp",
-                        cx, cy
-                    );
-                }
+                const g = screen.geometry;
+                callDBus(
+                    "org.aerogel.Cursor",
+                    "/org/aerogel/Cursor",
+                    "org.aerogel.Cursor",
+                    "Warp",
+                    Math.round(g.x + g.width  / 2),
+                    Math.round(g.y + g.height / 2)
+                );
             }
         }
 
-        // Always update lastFocusedScreen -- even if the workspace is empty,
-        // focus has conceptually moved to this monitor. This ensures
-        // syncDesktopAndVisibility shows the correct workspace in the widget.
         this.lastFocusedScreen = screenName;
         this.syncDesktopAndVisibility();
 
-        const lastId = this.lastFocused.get(ws);
-        if (lastId) {
-            const all = workspace.windowList();
-            for (let i = 0; i < all.length; i++) {
-                if (all[i].internalId === lastId) {
-                    workspace.activeWindow = all[i];
-                    return;
+        this.focusingScreen = true;
+        try {
+            const lastId = this.lastFocused.get(ws);
+            if (lastId) {
+                const all = workspace.windowList();
+                for (let i = 0; i < all.length; i++) {
+                    if (all[i].internalId === lastId) {
+                        workspace.activeWindow = all[i];
+                        return;
+                    }
                 }
             }
-        }
-        const tree = this.trees.get(ws);
-        if (tree && !tree.isEmpty()) {
-            const leaves = tree.leaves();
-            if (leaves.length > 0) workspace.activeWindow = leaves[0].window;
+            const tree = this.trees.get(ws);
+            if (tree && !tree.isEmpty()) {
+                const leaves = tree.leaves();
+                if (leaves.length > 0) workspace.activeWindow = leaves[0].window;
+            }
+        } finally {
+            this.focusingScreen = false;
         }
     }
 

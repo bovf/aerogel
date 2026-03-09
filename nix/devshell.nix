@@ -18,9 +18,10 @@ pkgs.mkShell {
       # Build tooling
       pkgs.gnumake
     ]
-    # kpackagetool6 and openssh are only available/relevant on Linux.
+    # KDE/Linux tooling -- only available/relevant on Linux.
     ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
       pkgs.kdePackages.kpackage  # kpackagetool6 -- KWin script + widget installer
+      pkgs.kdePackages.qttools   # qdbus -- D-Bus introspection, used by window-dump
       pkgs.openssh               # ssh/scp for nix run .#vm-ssh
     ];
 
@@ -69,6 +70,11 @@ pkgs.mkShell {
     echo "  VM logs"
     echo "  -------"
     echo "  nix run .#vm-ssh -- \"journalctl --user -b | grep '\[aerogel\]'\""
+    echo ""
+    echo "  Diagnostics"
+    echo "  -----------"
+    echo "  nix run .#window-dump              dump all current KWin windows (class, name, caption, flags)"
+    echo "  nix run .#window-dump -- watch     continuously log new windows as they appear/disappear"
     echo ""
     ''}
   '';

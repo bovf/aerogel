@@ -54,9 +54,14 @@ function init(): WorkspaceManager {
         _manager = new WorkspaceManager(config);
 
         // Register keyboard shortcuts (needs _manager to be set first).
-        // Note: conflicting KDE shortcuts (Meta+1..9, Meta+0, Meta+L, Meta+Tab)
-        // are cleared by the `aerogel-enable` shell script before the script loads.
         Shortcuts.register(_manager);
+
+        // Detect shortcut conflicts asynchronously.  Logs detailed warnings
+        // per conflict and sends a single aggregated desktop notification if
+        // any are found.  NixOS users have conflicts cleared declaratively
+        // by the home-manager module; other users are directed to
+        // System Settings → Shortcuts.
+        ShortcutConflictManager.detectConflicts();
 
         // Connect workspace signals and tile existing windows.
         _manager.init();

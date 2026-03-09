@@ -58,7 +58,8 @@
             plasma6-applets-aerogel-pager = widgetPkg;
 
             # Cursor warp helper -- installs aerogel-cursor binary + D-Bus
-            # activation file + systemd user unit.  Requires ydotool at runtime.
+            # activation file + systemd user unit.  Requires input group for
+            # /dev/uinput access (set via nixosModules.default).
             aerogel-cursor = cursorPkg;
 
             # Aerogel icon -- installs to $out/share/icons/hicolor/scalable/apps/aerogel.svg
@@ -103,7 +104,7 @@
 
       # NixOS system-level module -- sets udev rule for /dev/uinput and
       # optionally adds users to the "input" group.
-      # Not needed on Arch/CachyOS (ydotool package ships the rule itself).
+      # Required on NixOS (no package ships this rule by default).
       nixosModules.default = import ./nix/nixos-module.nix;
 
       # NixOS VM for manual testing.
