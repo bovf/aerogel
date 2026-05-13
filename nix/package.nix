@@ -23,7 +23,7 @@ pkgs.buildNpmPackage {
 
   src = pkgs.lib.cleanSource ../.;
 
-  npmDepsHash = "sha256-xdWpdcnF0qNBrEU+rxnOHi/JFw0B0B0tGxKnGq46ID0=";
+  npmDepsHash = "sha256-P9xEHcjJ5W0xCqS9l59Kfs3OUrs3LRssv6L6fccnKYo=";
 
   # Only the compiler is needed -- no runtime node_modules in the output.
   npmBuildScript = "build";
