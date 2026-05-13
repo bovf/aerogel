@@ -507,11 +507,18 @@ in
   in mkApp "aerogel-window-dump" [ pkgs.kdePackages.qttools pkgs.systemd ] ''
     MODE="''${1:-dump}"
     SCRIPT_FILE="${dumpScript}"
+    SCRIPT_NAME="aerogel-window-dump"
     if [ "$MODE" = "watch" ]; then
       SCRIPT_FILE="${watchScript}"
+      SCRIPT_NAME="aerogel-window-watch"
     fi
 
-    SCRIPT_ID=$(${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$SCRIPT_FILE" "")
+    SCRIPT_ID=$(${qdbus} org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$SCRIPT_FILE" "$SCRIPT_NAME")
+    if [ -z "$SCRIPT_ID" ] || [ "$SCRIPT_ID" -lt 0 ] 2>/dev/null; then
+      echo "aerogel-window-dump: failed to load script into KWin (returned: '$SCRIPT_ID')" >&2
+      echo "  Is KWin running? Is DBUS_SESSION_BUS_ADDRESS set?" >&2
+      exit 1
+    fi
     ${qdbus} org.kde.KWin "/Scripting/Script$SCRIPT_ID" org.kde.kwin.Script.run
     sleep 0.3
 
