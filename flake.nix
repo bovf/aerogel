@@ -47,6 +47,7 @@
           kwinScriptPkg = import ./nix/package.nix { inherit pkgs; };
           widgetPkg     = import ./nix/widget.nix  { inherit pkgs; };
           cursorPkg     = import ./nix/cursor.nix  { inherit pkgs; };
+          helperPkg     = import ./nix/helper.nix  { inherit pkgs; };
           iconsPkg      = import ./nix/icons.nix   { inherit pkgs; };
         in
         {
@@ -61,6 +62,11 @@
             # activation file + systemd user unit.  Requires input group for
             # /dev/uinput access (set via nixosModules.default).
             aerogel-cursor = cursorPkg;
+
+            # Orchestration helper -- installs aerogel-helper binary + D-Bus
+            # activation file + systemd user unit.  Owns the enable/disable
+            # lifecycle of the KWin script and the KDE shortcut snapshot.
+            aerogel-helper = helperPkg;
 
             # Aerogel icon -- installs to $out/share/icons/hicolor/scalable/apps/aerogel.svg
             aerogel-icons = iconsPkg;
@@ -80,6 +86,8 @@
                 cp -r ${widgetPkg}/. $out
                 chmod -R u+w $out
                 cp -r ${cursorPkg}/. $out
+                chmod -R u+w $out
+                cp -r ${helperPkg}/. $out
                 chmod -R u+w $out
                 cp -r ${iconsPkg}/. $out
                 runHook postInstall

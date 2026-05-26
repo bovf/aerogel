@@ -104,6 +104,24 @@ navigation.
 | `Super+Minus` | Shrink window (adjust BSP split ratio) |
 | `Super+Equal` | Grow window (adjust BSP split ratio) |
 
+### Toggle aerogel on/off
+
+| Shortcut | Action |
+|---|---|
+| `Meta+Ctrl+A` | Toggle aerogel tiling on/off (registered by the `aerogel-helper` service) |
+
+When aerogel is **enabled**: the keys above are bound to aerogel actions
+and conflicting KDE defaults (Quick Tile, Maximize, task-manager entry, etc.)
+are suppressed.
+
+When aerogel is **disabled**: aerogel's bindings are released and KDE
+defaults are restored.  The environment behaves as if aerogel was never
+installed -- `Meta+Left` quick-tiles, `Meta+Up` maximises, `Meta+1..9`
+activate task-manager entries, etc.
+
+The toggle keybind is rebindable in **System Settings -> Shortcuts ->
+Aerogel Helper -> Toggle aerogel tiling**.
+
 ## Requirements
 
 - KDE Plasma 6 on Wayland
@@ -156,8 +174,49 @@ together. The naming is consistent across Nix and AUR.
 | **`aerogel`** | Meta-package -- installs all components below |
 | `kwin-scripts-aerogel` | BSP tiling KWin script |
 | `plasma6-applets-aerogel-pager` | Plasma panel workspace pager widget |
+| `aerogel-helper` | D-Bus orchestration service: toggle keybind, dynamic KDE-shortcut suppression / restore, state file for the widget |
 | `aerogel-cursor` | D-Bus cursor-warp service for multi-monitor Wayland (requires `input` group for `/dev/uinput`) |
 | `aerogel-icons` | Custom icon for KDE integration (hicolor icon theme) |
+
+### What `aerogel-helper` does
+
+The helper owns the lifecycle "switch between aerogel-mode and KDE-default-mode":
+
+- On every **enable**: snapshots the current KDE bindings that conflict with
+  aerogel's keys (Window Quick Tile, Window Maximize, plasmashell task manager
+  entries, etc.), strips aerogel's keys from those actions via KGlobalAccel
+  D-Bus, and force-claims aerogel's own keys -- so `Meta+Left` reliably fires
+  aerogel-focus-left-arrow, not Quick Tile.
+- On every **disable**: releases aerogel's keys, restores the snapshotted KDE
+  bindings via the same D-Bus interface.  When the snapshot is empty (first
+  run, or `kglobalshortcutsrc` was previously cleared) a canonical-owner
+  fallback brings back the KDE defaults.  The result: disabled state is
+  indistinguishable from "aerogel was never installed".
+- Registers the global toggle shortcut (`Meta+Ctrl+A` by default) directly
+  with KGlobalAccel.  Plasma 6 dropped khotkeys so the usual
+  `programs.plasma.hotkeys.commands` doesn't work; the helper takes over.
+- Writes a tiny `$XDG_STATE_HOME/aerogel/enabled` state file
+  (`true` / `false`) on every state flip.  The pager widget polls this
+  ~500 ms instead of round-tripping through KWin's D-Bus, which has
+  reliability issues with Plasma 6's QML DBus binding.
+
+Without the helper, aerogel still tiles -- but the toggle keybind doesn't
+exist, KDE shortcut conflicts stay permanently cleared, and the pager
+relies on a slower fallback path.
+
+### Troubleshooting
+
+**Toggle keybind stops working after "Reset to Defaults" in System Settings.**
+The reset wipes the `[aerogel-helper]` section from `kglobalshortcutsrc`.
+Re-register by restarting the helper:
+
+```bash
+systemctl --user restart aerogel-helper.service
+```
+
+This is a known limitation -- see `.opencode/known-limitations.md`.  A
+future release will auto-heal by subscribing to KGlobalAccel's change
+signal.
 
 ## Installation
 
@@ -184,12 +243,17 @@ aerogel.users  = [ "youruser" ];
 
 ```nix
 # home.nix (home-manager)
-# Installs KWin script, widget, aerogel-cursor; enables the script in kwinrc.
+# Installs KWin script, widget, aerogel-helper, aerogel-cursor;
+# enables the script in kwinrc.
 imports = [ inputs.aerogel.homeManagerModules.default ];
-aerogel.enable     = true;
-aerogel.cursorWarp = true;   # default: true -- requires input group for /dev/uinput
-aerogel.innerGap   = 8;      # default: 8
-aerogel.outerGap   = 8;      # default: 8
+aerogel.enable                  = true;
+aerogel.cursorWarp              = true;   # default: true -- requires input group for /dev/uinput
+aerogel.dynamicShortcutHandling = true;   # default: true -- ships aerogel-helper and lets it
+                                          # snapshot/restore KDE shortcuts at runtime.  Set to
+                                          # false to fall back to the older "permanently clear
+                                          # KDE bindings declaratively" behaviour.
+aerogel.innerGap                = 8;      # default: 8
+aerogel.outerGap                = 8;      # default: 8
 ```
 
 #### Manual flake install (without modules)
@@ -211,8 +275,9 @@ aerogel.outerGap   = 8;      # default: 8
 Individual packages:
 
 ```nix
-inputs.aerogel.packages.${pkgs.system}.kwin-scripts-aerogel          # KWin script only
+inputs.aerogel.packages.${pkgs.system}.kwin-scripts-aerogel           # KWin script only
 inputs.aerogel.packages.${pkgs.system}.plasma6-applets-aerogel-pager  # Plasma widget only
+inputs.aerogel.packages.${pkgs.system}.aerogel-helper                 # D-Bus orchestration + toggle keybind
 inputs.aerogel.packages.${pkgs.system}.aerogel-cursor                 # cursor warp service
 inputs.aerogel.packages.${pkgs.system}.aerogel-icons                  # hicolor icon
 ```
@@ -226,6 +291,7 @@ nix profile install github:youruser/aerogel
 # Or install individually
 nix profile install github:youruser/aerogel#kwin-scripts-aerogel
 nix profile install github:youruser/aerogel#plasma6-applets-aerogel-pager
+nix profile install github:youruser/aerogel#aerogel-helper
 nix profile install github:youruser/aerogel#aerogel-cursor
 nix profile install github:youruser/aerogel#aerogel-icons
 ```
@@ -239,6 +305,7 @@ yay -S aerogel
 # Or install individually
 yay -S kwin-scripts-aerogel
 yay -S plasma6-applets-aerogel-pager
+yay -S aerogel-helper    # recommended: toggle keybind + dynamic shortcut handling
 yay -S aerogel-cursor    # optional: cursor warping (needs python-evdev, python-dbus, python-gobject)
 yay -S aerogel-icons     # optional: custom icon in KDE settings / widget explorer
 ```
@@ -267,10 +334,19 @@ The KWin script and widget are available on the KDE Store:
 - **Widget:** Right-click panel → "Add Widgets..." → "Get New Widgets..." →
   search for "Aerogel Pager"
 
-> **Note:** The KDE Store installation does not include the custom icon
-> (`aerogel-icons`) or cursor warp service (`aerogel-cursor`). For the full
-> experience including the Aerogel icon in System Settings and the widget
-> explorer, install `aerogel-icons` separately from the AUR or via Nix.
+> **Note:** The KDE Store installation does not include `aerogel-helper`,
+> `aerogel-cursor`, or `aerogel-icons` -- the KDE Store only accepts
+> KPackage uploads (KWin scripts and Plasma widgets), not D-Bus services
+> or icon themes.  Without `aerogel-helper`:
+> - The `Meta+Ctrl+A` toggle keybind is not registered.
+> - KDE shortcut conflicts (Quick Tile, Window Maximize, task-manager
+>   entries) are not restored when aerogel is disabled.
+> - The pager widget falls back to polling KWin directly, which is slower
+>   and (on some Plasma 6 builds) unreliable.
+>
+> For the full experience, install `aerogel-helper`, `aerogel-cursor`, and
+> `aerogel-icons` from the AUR or via Nix alongside the KDE Store
+> installation.
 
 ### Manual (non-Nix)
 
@@ -447,6 +523,7 @@ widget/                          Plasma pager widget
       FullRep.qml                Workspace grid (present but not used in current flow)
 scripts/
   aerogel-cursor.py              D-Bus cursor warp service (python-evdev UInput)
+  aerogel-helper.py              D-Bus orchestration service (toggle keybind + dynamic KDE-shortcut snapshot/restore + state file)
 assets/
   aerogel-logo.svg               Standalone SVG logo (dark background)
   aerogel-logo.png               512x512 PNG render (for KDE Store)
@@ -456,8 +533,9 @@ nix/                             Nix packaging and tooling
   package.nix                    buildNpmPackage → kwin-scripts-aerogel
   widget.nix                     stdenvNoCC → plasma6-applets-aerogel-pager
   cursor.nix                     stdenvNoCC → aerogel-cursor (D-Bus + systemd)
+  helper.nix                     stdenvNoCC → aerogel-helper (D-Bus + systemd)
   icons.nix                      stdenvNoCC → aerogel-icons (hicolor SVG)
-  hm-module.nix                  home-manager module (aerogel.enable, cursorWarp, gaps)
+  hm-module.nix                  home-manager module (aerogel.enable, cursorWarp, dynamicShortcutHandling, gaps)
   nixos-module.nix               NixOS module (udev rule, input group)
   apps.nix                       All nix run .#<app> definitions
   devshell.nix                   Dev environment (nix develop / direnv)

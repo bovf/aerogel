@@ -1,10 +1,12 @@
 # Maintainer: aerogel contributors
 # AUR split package for Aerogel -- AeroSpace-inspired BSP tiling for KDE Plasma 6
 #
-# Produces five packages:
+# Produces six packages:
 #   aerogel                         meta-package (pulls in all components)
 #   kwin-scripts-aerogel            KWin BSP tiling script
 #   plasma6-applets-aerogel-pager   Plasma panel workspace pager widget
+#   aerogel-helper                  D-Bus orchestration: toggle keybind, dynamic
+#                                   KDE-shortcut snapshot / restore, state file
 #   aerogel-cursor                  D-Bus cursor-warp service (python-evdev)
 #   aerogel-icons                   Hicolor icon for KDE integration
 
@@ -13,6 +15,7 @@ pkgname=(
   aerogel
   kwin-scripts-aerogel
   plasma6-applets-aerogel-pager
+  aerogel-helper
   aerogel-cursor
   aerogel-icons
 )
@@ -37,6 +40,7 @@ package_aerogel() {
   depends=(
     'kwin-scripts-aerogel'
     'plasma6-applets-aerogel-pager'
+    'aerogel-helper'
     'aerogel-cursor'
     'aerogel-icons'
   )
@@ -96,6 +100,48 @@ PartOf=graphical-session.target
 Type=dbus
 BusName=org.aerogel.Cursor
 ExecStart=/usr/bin/aerogel-cursor
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+}
+
+package_aerogel-helper() {
+  pkgdesc="Aerogel orchestration D-Bus service (toggle keybind + dynamic KDE-shortcut snapshot/restore)"
+  depends=('python' 'python-dbus' 'python-gobject')
+
+  cd "$pkgbase-$pkgver"
+
+  # Install the helper script.  System python is fine -- only stdlib +
+  # dbus-python + pygobject3 are required (no evdev, no uinput access).
+  install -Dm755 scripts/aerogel-helper.py \
+    "$pkgdir/usr/bin/aerogel-helper"
+
+  # D-Bus session service activation file.  The session bus starts the
+  # helper automatically on the first method call (the aerogel KWin
+  # script's init() calls SuppressShortcuts via callDBus).
+  install -Dm644 /dev/stdin \
+    "$pkgdir/usr/share/dbus-1/services/org.aerogel.Helper.service" <<EOF
+[D-BUS Service]
+Name=org.aerogel.Helper
+Exec=/usr/bin/aerogel-helper
+EOF
+
+  # systemd user unit (optional -- for users who prefer explicit service
+  # management over D-Bus activation).
+  install -Dm644 /dev/stdin \
+    "$pkgdir/usr/lib/systemd/user/aerogel-helper.service" <<'EOF'
+[Unit]
+Description=aerogel-helper -- D-Bus orchestration for Aerogel KWin script
+Documentation=https://github.com/your-org/aerogel
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=org.aerogel.Helper
+ExecStart=/usr/bin/aerogel-helper
 Restart=on-failure
 
 [Install]

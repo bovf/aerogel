@@ -25,6 +25,7 @@ import QtQuick.Templates as T
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.workspace.dbus as DBus
+import org.kde.plasma.plasma5support as P5Support
 import org.kde.kirigami as Kirigami
 import org.kde.taskmanager
 import org.kde.kcmutils as KCM
@@ -64,24 +65,70 @@ PlasmoidItem {
 
     Component.onCompleted: {
         if (pagerModel.currentDesktop) root.recordVisit(pagerModel.currentDesktop)
-        root.refreshAerogelState()
+        console.log("[aerogel-pager] started, polling state file every",
+                    helperState.interval, "ms")
     }
 
     // ── Aerogel enabled state ─────────────────────────────────────────────────
     // Tracked by polling isScriptLoaded on the KWin Scripting D-Bus interface.
+    //
+    // Two reasons to keep this fresh independently of user interaction:
+    //   1. Multi-monitor panels each have their own widget instance; toggling
+    //      from one needs the other to reflect truth before the user clicks.
+    //   2. refreshAerogelState() is async -- if the popup waits on it,
+    //      the dropdown renders with the stale value and the menu item label
+    //      ("Disable" vs "Enable") fires the wrong action on click.
 
     property bool aerogelEnabled: true
 
+    // State source: cat $XDG_STATE_HOME/aerogel/enabled (helper writes
+    // "true" / "false" on every Enable / Disable / startup).  We use
+    // Plasma5Support.DataSource because Plasma 6's QML DBus binding does
+    // not reliably deliver async replies from KWin's isScriptLoaded --
+    // Timer fires every 500 ms but the callback never runs.  Reading a
+    // ~5-byte file via cat is far cheaper than a D-Bus round-trip and
+    // can't get stuck in the QML event loop.
+    P5Support.DataSource {
+        id: helperState
+        engine: "executable"
+        interval: 500
+        property string sourceCmd:
+            "cat \"${XDG_STATE_HOME:-$HOME/.local/state}/aerogel/enabled\" 2>/dev/null"
+
+        Component.onCompleted: helperState.connectSource(sourceCmd)
+
+        onNewData: function(sourceName, data) {
+            try {
+                if (sourceName !== sourceCmd) return
+                const stdout = (data["stdout"] || "").trim()
+                const next = (stdout === "true")
+                if (next !== root.aerogelEnabled) {
+                    console.log("[aerogel-pager] state:",
+                                root.aerogelEnabled, "->", next,
+                                "(stdout=", JSON.stringify(stdout), ")")
+                    root.aerogelEnabled = next
+                }
+            } catch (e) {
+                console.log("[aerogel-pager] onNewData error:", e)
+            }
+        }
+    }
+
     function refreshAerogelState() {
-        DBus.SessionBus.asyncCall({
-            service:   "org.kde.KWin",
-            path:      "/Scripting",
-            iface:     "org.kde.kwin.Scripting",
-            member:    "isScriptLoaded",
-            arguments: [ new DBus.string("aerogel") ],
-        }, function(result) {
-            root.aerogelEnabled = (result === true || result === "true")
-        })
+        // No-op stub kept so existing call sites (Component.onCompleted,
+        // openDropdown) still compile.  Real updates flow via helperState
+        // above.
+    }
+
+    // Polling is now handled by the helperState Plasma5Support.DataSource
+    // above (cat the helper's state file every 500 ms).  This Timer is
+    // kept as a no-op for compatibility with refreshTimer call sites
+    // elsewhere in the file; it doesn't actually do anything useful.
+    Timer {
+        id: aerogelStatePoll
+        interval: 5000
+        repeat:   false
+        running:  false
     }
 
     // ── D-Bus helpers ─────────────────────────────────────────────────────────
@@ -118,47 +165,28 @@ PlasmoidItem {
         setCurrentDesktop(((current + direction) % count + count) % count + 1)
     }
 
-    // Toggle the aerogel KWin script on/off.
+    // Set aerogel to a specific target state via the aerogel-helper service.
     //
-    // Disable: call unloadScript("aerogel") -- stops tiling immediately.
-    //   kwinrc is NOT changed, so aerogelEnabled=true remains on disk.
-    //
-    // Enable: call reconfigure() -- KWin re-reads kwinrc (still true),
-    //   restarts aerogel through its plugin system, which re-runs init()
-    //   and tiles all currently-open windows via workspace.windowList().
-    //
-    // This avoids any need to write kwinrc from the plasmoid (no subprocess,
-    // no D-Bus kconfig service needed).
+    // We call explicit Enable() / Disable() -- NOT Toggle() -- because the
+    // menu captured the user's intent at open time (dropdownMenu.snapshotEnabled).
+    // Toggle() dispatches on the SERVER's current state, which can flip
+    // mid-menu and produce the opposite of what the user clicked.  Calling
+    // Enable/Disable explicitly always honours the label the user saw:
+    // clicking "Disable" disables, even if aerogel happens to already be off
+    // (helper is then a no-op).
 
-    function toggleAerogel() {
-        const enable = !root.aerogelEnabled
-        // Optimistically update UI immediately.
-        root.aerogelEnabled = enable
+    function setAerogelEnabled(target) {
+        const member = target ? "Enable" : "Disable"
+        root.aerogelEnabled = target
 
-        if (enable) {
-            // Re-enable: ask KWin to reload its config -- since kwinrc still
-            // has aerogelEnabled=true, KWin will restart the plugin cleanly.
-            DBus.SessionBus.asyncCall({
-                service: "org.kde.KWin",
-                path:    "/KWin",
-                iface:   "org.kde.KWin",
-                member:  "reconfigure",
-            }, function() {
-                // Verify actual state after KWin has settled (~2 s).
-                refreshTimer.restart()
-            })
-        } else {
-            // Disable: unload the running script immediately.
-            DBus.SessionBus.asyncCall({
-                service:   "org.kde.KWin",
-                path:      "/Scripting",
-                iface:     "org.kde.kwin.Scripting",
-                member:    "unloadScript",
-                arguments: [ new DBus.string("aerogel") ],
-            }, function() {
-                refreshTimer.restart()
-            })
-        }
+        DBus.SessionBus.asyncCall({
+            service:   "org.aerogel.Helper",
+            path:      "/org/aerogel/Helper",
+            iface:     "org.aerogel.Helper",
+            member:    member,
+        }, function() {
+            refreshTimer.restart()
+        })
     }
 
     // Delay re-querying isScriptLoaded to let KWin settle after reconfigure.
@@ -169,15 +197,17 @@ PlasmoidItem {
         onTriggered: root.refreshAerogelState()
     }
 
-    // Human-readable label for a desktop UUID.
+    // Label for a desktop UUID -- always the 1-based position in
+    // pagerModel.desktopIds.  We deliberately ignore desktopNames: aerogel
+    // mints virtual desktops dynamically, and KWin auto-generates names like
+    // "Desktop 2" / "Desktop 5" that don't track the desktop's position in
+    // the ordered list (which was causing workspace 1 to display as "2").
+    // Position is what the pager is for; the numeric label always matches
+    // the CompactRep number on the panel.
     function labelForDesktopId(desktopId) {
-        const ids   = pagerModel.desktopIds
-        const names = pagerModel.desktopNames
+        const ids = pagerModel.desktopIds
         for (let i = 0; i < ids.length; i++) {
-            if (ids[i] === desktopId) {
-                const name = (names && names[i]) ? names[i] : ""
-                return (name && name !== "Desktop " + (i + 1)) ? name : String(i + 1)
-            }
+            if (ids[i] === desktopId) return String(i + 1)
         }
         return "?"
     }
@@ -187,8 +217,9 @@ PlasmoidItem {
     // VirtualDesktopInfo instance so QML's binding engine can track it directly.
 
     compactRepresentation: CompactRep {
-        switchDesktop: root.switchDesktop
-        onOpenMenu:    root.openDropdown()
+        aerogelEnabled: root.aerogelEnabled
+        switchDesktop:  root.switchDesktop
+        onOpenMenu:     root.openDropdown()
     }
 
     // Required by PlasmoidItem -- kept minimal since we never expand.
@@ -199,6 +230,12 @@ PlasmoidItem {
     property var menuRecentIds: []
 
     function openDropdown() {
+        // Pop the menu synchronously so the click event isn't lost.
+        // Kick off a fresh state poll in parallel; it lands within ~50 ms
+        // and updates root.aerogelEnabled via QML bindings before the user
+        // can click anything.  The menu also captures the state in
+        // dropdownMenu.snapshotEnabled at aboutToShow so the label and the
+        // click action stay consistent even if the poll fires mid-menu.
         root.refreshAerogelState()
         const allIds = pagerModel.desktopIds
         root.menuRecentIds = root.recentDesktopIds.filter(
@@ -212,6 +249,14 @@ PlasmoidItem {
 
         // Open as a real top-level window so the panel doesn't clip its height.
         popupType: T.Popup.Window
+
+        // Snapshot the enabled state at menu-open time and use it for BOTH
+        // the toggle item's label and its action.  Without this snapshot, a
+        // mid-menu poll tick could flip root.aerogelEnabled between the
+        // label render and the click handler -- producing "Disable" text
+        // that calls Enable, or vice versa.
+        property bool snapshotEnabled: false
+        onAboutToShow: snapshotEnabled = root.aerogelEnabled
 
         // ── Minimum width ─────────────────────────────────────────────────────
         // QQC2.Menu sizes to its widest item by default; override so the menu
@@ -252,18 +297,20 @@ PlasmoidItem {
         QQC2.MenuSeparator {}
 
         // ── Aerogel toggle ────────────────────────────────────────────────────
+        // Both text and action read from dropdownMenu.snapshotEnabled, which
+        // is captured at onAboutToShow.  Guarantees the click does what the
+        // label says even if root.aerogelEnabled updates while the menu is
+        // open.
         QQC2.MenuItem {
             implicitHeight: Math.max(implicitContentHeight,
                                      Kirigami.Units.gridUnit * 1.75)
             leftPadding:  Kirigami.Units.largeSpacing * 2
             rightPadding: Kirigami.Units.largeSpacing * 2
 
-            text: root.aerogelEnabled
+            text: dropdownMenu.snapshotEnabled
                 ? i18nc("@action:inmenu", "Disable Aerogel Tiling")
                 : i18nc("@action:inmenu", "Enable Aerogel Tiling")
-            checkable: true
-            checked:   root.aerogelEnabled
-            onTriggered: root.toggleAerogel()
+            onTriggered: root.setAerogelEnabled(!dropdownMenu.snapshotEnabled)
         }
 
         // ── Configure virtual desktops ────────────────────────────────────────

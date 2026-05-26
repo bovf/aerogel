@@ -53,14 +53,25 @@ function init(): WorkspaceManager {
         const config = loadConfig();
         _manager = new WorkspaceManager(config);
 
+        // Ask aerogel-helper to snapshot + clear KDE shortcuts that would
+        // shadow our bindings.  Fire-and-forget; the helper is D-Bus
+        // activatable so the session bus auto-starts it on first call.
+        // Covers boot-time auto-load (kwinrc.Plugins.aerogelEnabled=true)
+        // which bypasses Helper.Enable().  Silent no-op if the helper is
+        // not installed (KDE Store users without the full aerogel package).
+        callDBus(
+            "org.aerogel.Helper", "/org/aerogel/Helper", "org.aerogel.Helper",
+            "SuppressShortcuts",
+        );
+
         // Register keyboard shortcuts (needs _manager to be set first).
         Shortcuts.register(_manager);
 
         // Detect shortcut conflicts asynchronously.  Logs detailed warnings
         // per conflict and sends a single aggregated desktop notification if
-        // any are found.  NixOS users have conflicts cleared declaratively
-        // by the home-manager module; other users are directed to
-        // System Settings → Shortcuts.
+        // any are found.  With aerogel-helper running, this should report
+        // zero conflicts; the detector remains as a safety net for users
+        // without the helper.
         ShortcutConflictManager.detectConflicts();
 
         // Connect workspace signals and tile existing windows.
@@ -85,9 +96,20 @@ function destroy(): void {
             _manager.destroy();
             _manager = null;
         }
-        // Remove aerogel shortcut registrations from KGlobalAccel.
-        // Original KDE bindings are restored by the `aerogel-disable` shell script.
+        // Remove aerogel shortcut registrations from KGlobalAccel so that
+        // kglobalshortcutsrc stays clean if the script is permanently
+        // disabled / uninstalled.
         ShortcutConflictManager.cleanup();
+
+        // Ask aerogel-helper to restore the KDE shortcuts we suppressed.
+        // Covers external-unload paths (System Settings -> KWin Scripts,
+        // KWin reconfigure flipping the plugin off, etc.) where Helper.Disable()
+        // was not the trigger.  Silent no-op without the helper installed.
+        callDBus(
+            "org.aerogel.Helper", "/org/aerogel/Helper", "org.aerogel.Helper",
+            "RestoreShortcuts",
+        );
+
         console.log("[aerogel] stopped.");
     } catch (e) {
         console.error("[aerogel] destroy() failed:", e);

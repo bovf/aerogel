@@ -38,6 +38,7 @@ let
   kwinScriptPkg = import ./package.nix { inherit pkgs; };
   widgetPkg     = import ./widget.nix  { inherit pkgs; };
   cursorPkg     = import ./cursor.nix  { inherit pkgs; };
+  helperPkg     = import ./helper.nix  { inherit pkgs; };
   iconsPkg      = import ./icons.nix   { inherit pkgs; };
 in
 {
@@ -70,6 +71,29 @@ in
         shortcuts block is omitted entirely -- you manage conflicts yourself.
       '';
     };
+
+    dynamicShortcutHandling = lib.mkOption {
+      type    = lib.types.bool;
+      default = true;
+      description = ''
+        When true (default), aerogel-helper handles KDE-shortcut conflicts
+        at runtime: on enable it snapshots the current bindings and clears
+        them; on disable it restores them.  KDE quick-tile / activate-task-
+        manager-entry bindings come back when aerogel is toggled off via
+        the pager widget or the Meta+Ctrl+A keybind.
+
+        When false, the original behaviour is used: the conflicting KDE
+        shortcuts are cleared declaratively in kglobalshortcutsrc and never
+        restored.  Use this if you don't want aerogel-helper installed, or
+        if you're sure you'll never disable aerogel at runtime.
+      '';
+    };
+
+    # NOTE: The global toggle keybind is registered directly with KGlobalAccel
+    # by the aerogel-helper service at startup (Meta+Ctrl+A by default).
+    # Users rebind it via System Settings -> Shortcuts -> Aerogel Helper ->
+    # Toggle aerogel tiling.  No nix option is needed: a declarative keybind
+    # written to khotkeysrc would do nothing because Plasma 6 dropped khotkeys.
 
     innerGap = lib.mkOption {
       type    = lib.types.int;
@@ -112,7 +136,8 @@ in
     #   - D-Bus finds the cursor service via share/dbus-1/services/
     home.packages =
       [ kwinScriptPkg widgetPkg iconsPkg ]
-      ++ lib.optional cfg.cursorWarp cursorPkg;
+      ++ lib.optional cfg.cursorWarp cursorPkg
+      ++ lib.optional cfg.dynamicShortcutHandling helperPkg;
 
     # plasma-manager requires programs.plasma.enable = true to run its
     # activation scripts that write kwinrc and other Plasma config files.
@@ -135,151 +160,168 @@ in
     };
 
     # ── Shortcut management ──────────────────────────────────────────────
-    # Two concerns handled here:
+    # Two concerns:
     #
-    # 1. CONFLICT RESOLUTION: Clear KDE default shortcuts that clash with
-    #    aerogel bindings (plasmashell task manager, ksmserver lock, etc.).
+    # 1. KDE-CONFLICT RESOLUTION: Suppress KDE defaults that clash with aerogel
+    #    bindings (plasmashell task manager, ksmserver lock, kwin quick-tile,
+    #    etc.).
     #
-    # 2. DECLARATIVE BINDING: Write all aerogel shortcut key sequences to
-    #    kglobalshortcutsrc.  This is critical because KGlobalAccel persists
+    #    When dynamicShortcutHandling = true (default): the aerogel-helper
+    #    D-Bus service does this at runtime -- snapshots on enable, restores
+    #    on disable.  KDE quick-tile / activate-task-manager-entry bindings
+    #    come back when aerogel is toggled off via the pager or keybind.
+    #
+    #    When dynamicShortcutHandling = false: we clear them declaratively
+    #    here, exactly as the previous version did.  Static -- conflicts stay
+    #    cleared even when aerogel is unloaded.
+    #
+    # 2. DECLARATIVE AEROGEL BINDINGS: Write all aerogel shortcut key sequences
+    #    to kglobalshortcutsrc.  This is critical because KGlobalAccel persists
     #    shortcut state -- if a previous aerogel install had conflicts and
     #    KGlobalAccel stored an empty binding for an aerogel action, the
     #    ShortcutHandler QML re-registration will NOT override the persisted
     #    empty binding.  Declaratively writing the bindings ensures they are
-    #    always correct regardless of prior state.
-    #
-    # The script also detects conflicts at runtime (for KDE Store / non-Nix
-    # users) and sends a notification, but that's a fallback -- for NixOS
-    # users this section is the authoritative source of truth.
+    #    always correct regardless of prior state.  Independent of #1.
     #
     # When forceKeybinds is true (default), every value is wrapped with
     # lib.mkForce so aerogel takes priority over any user-defined shortcuts
-    # in other modules (e.g. pl-badwater's shortcuts.nix).  When false, this
-    # entire block is omitted and the user manages conflicts themselves.
+    # in other modules.  When false, the entire block is omitted.
     programs.plasma.shortcuts = lib.mkIf cfg.forceKeybinds (
-      lib.mapAttrs (_component: lib.mapAttrs (_action: lib.mkForce)) {
+      lib.mapAttrs (_component: lib.mapAttrs (_action: lib.mkForce)) (
+        lib.recursiveUpdate
+          # ── Aerogel bindings ─────────────────────────────────────────────
+          # Always written -- the aerogel script needs these keys mapped to
+          # its actions regardless of how KDE conflicts are handled.
+          {
+            # Focus navigation (vim keys)
+            "kwin"."aerogel-focus-left"  = "Meta+H";
+            "kwin"."aerogel-focus-down"  = "Meta+J";
+            "kwin"."aerogel-focus-up"    = "Meta+K";
+            "kwin"."aerogel-focus-right" = "Meta+L";
 
-        # ── 1. Clear conflicting KDE defaults ──────────────────────────────
-        # Meta+L: "Lock Session" -- clear so aerogel-focus-right works.
-        "ksmserver"."Lock Session" = [];
+            # Focus navigation (arrow keys)
+            "kwin"."aerogel-focus-left-arrow"  = "Meta+Left";
+            "kwin"."aerogel-focus-down-arrow"  = "Meta+Down";
+            "kwin"."aerogel-focus-up-arrow"    = "Meta+Up";
+            "kwin"."aerogel-focus-right-arrow" = "Meta+Right";
 
-        # Meta+0: "Zoom to Actual Size" -- clear so aerogel-desktop-10 works.
-        "kwin"."view_actual_size" = [];
+            # Window swap/move (vim keys)
+            "kwin"."aerogel-move-left"  = "Meta+Shift+H";
+            "kwin"."aerogel-move-down"  = "Meta+Shift+J";
+            "kwin"."aerogel-move-up"    = "Meta+Shift+K";
+            "kwin"."aerogel-move-right" = "Meta+Shift+L";
 
-        # Meta+Left/Right: KWin "Quick Tile" left/right -- clear for arrow focus.
-        "kwin"."Window Quick Tile Left"  = [];
-        "kwin"."Window Quick Tile Right" = [];
+            # Window swap/move (arrow keys)
+            "kwin"."aerogel-move-left-arrow"  = "Meta+Shift+Left";
+            "kwin"."aerogel-move-down-arrow"  = "Meta+Shift+Down";
+            "kwin"."aerogel-move-up-arrow"    = "Meta+Shift+Up";
+            "kwin"."aerogel-move-right-arrow" = "Meta+Shift+Right";
 
-        # Meta+Up/Down: KWin maximize/minimize -- clear for arrow focus.
-        "kwin"."Window Maximize" = [];
-        "kwin"."Window Minimize" = [];
+            # Desktop switching (Meta+1..9,0; 0 = desktop 10)
+            "kwin"."aerogel-desktop-1"  = "Meta+1";
+            "kwin"."aerogel-desktop-2"  = "Meta+2";
+            "kwin"."aerogel-desktop-3"  = "Meta+3";
+            "kwin"."aerogel-desktop-4"  = "Meta+4";
+            "kwin"."aerogel-desktop-5"  = "Meta+5";
+            "kwin"."aerogel-desktop-6"  = "Meta+6";
+            "kwin"."aerogel-desktop-7"  = "Meta+7";
+            "kwin"."aerogel-desktop-8"  = "Meta+8";
+            "kwin"."aerogel-desktop-9"  = "Meta+9";
+            "kwin"."aerogel-desktop-10" = "Meta+0";
 
-        # Meta+Shift+Left/Right/Up/Down: KWin quick-tile corners -- clear for arrow swap.
-        "kwin"."Window Quick Tile Top"          = [];
-        "kwin"."Window Quick Tile Bottom"       = [];
-        "kwin"."Window Quick Tile Top Left"     = [];
-        "kwin"."Window Quick Tile Top Right"    = [];
-        "kwin"."Window Quick Tile Bottom Left"  = [];
-        "kwin"."Window Quick Tile Bottom Right" = [];
+            # Move window to desktop (Meta+Shift+1..9,0)
+            "kwin"."aerogel-move-to-desktop-1"  = "Meta+Shift+1";
+            "kwin"."aerogel-move-to-desktop-2"  = "Meta+Shift+2";
+            "kwin"."aerogel-move-to-desktop-3"  = "Meta+Shift+3";
+            "kwin"."aerogel-move-to-desktop-4"  = "Meta+Shift+4";
+            "kwin"."aerogel-move-to-desktop-5"  = "Meta+Shift+5";
+            "kwin"."aerogel-move-to-desktop-6"  = "Meta+Shift+6";
+            "kwin"."aerogel-move-to-desktop-7"  = "Meta+Shift+7";
+            "kwin"."aerogel-move-to-desktop-8"  = "Meta+Shift+8";
+            "kwin"."aerogel-move-to-desktop-9"  = "Meta+Shift+9";
+            "kwin"."aerogel-move-to-desktop-10" = "Meta+Shift+0";
 
-        # Meta+Shift+Left/Right: KWin "Window to Previous/Next Screen" -- clear for swap.
-        "kwin"."Window to Previous Screen" = [];
-        "kwin"."Window to Next Screen"     = [];
+            # Shifted-symbol alternatives (US-EN SPICE fallback)
+            "kwin"."aerogel-move-to-desktop-1-sym"  = "Meta+!";
+            "kwin"."aerogel-move-to-desktop-2-sym"  = "Meta+@";
+            "kwin"."aerogel-move-to-desktop-3-sym"  = "Meta+#";
+            "kwin"."aerogel-move-to-desktop-4-sym"  = "Meta+$";
+            "kwin"."aerogel-move-to-desktop-5-sym"  = "Meta+%";
+            "kwin"."aerogel-move-to-desktop-6-sym"  = "Meta+^";
+            "kwin"."aerogel-move-to-desktop-7-sym"  = "Meta+&";
+            "kwin"."aerogel-move-to-desktop-8-sym"  = "Meta+*";
+            "kwin"."aerogel-move-to-desktop-9-sym"  = "Meta+(";
+            "kwin"."aerogel-move-to-desktop-10-sym" = "Meta+)";
 
-        # Meta+Shift+Tab: "Walk Through Windows (Reverse)" -- keep only Alt+Shift+Tab.
-        "kwin"."Walk Through Windows (Reverse)" = [ "Alt+Shift+Tab" ];
+            # Monitor / float / fullscreen / close / resize
+            "kwin"."aerogel-next-monitor"      = "Meta+Backtab";
+            "kwin"."aerogel-float-toggle"      = "Meta+Space";
+            "kwin"."aerogel-fullscreen-toggle"  = "Meta+F";
+            "kwin"."aerogel-close-window"      = "Meta+Q";
+            "kwin"."aerogel-resize-shrink"     = "Meta+Minus";
+            "kwin"."aerogel-resize-grow"       = "Meta+Equal";
+          }
 
-        # Meta+1..9: plasmashell "Activate Task Manager Entry N" -- clear all.
-        "plasmashell"."activate task manager entry 1"  = [];
-        "plasmashell"."activate task manager entry 2"  = [];
-        "plasmashell"."activate task manager entry 3"  = [];
-        "plasmashell"."activate task manager entry 4"  = [];
-        "plasmashell"."activate task manager entry 5"  = [];
-        "plasmashell"."activate task manager entry 6"  = [];
-        "plasmashell"."activate task manager entry 7"  = [];
-        "plasmashell"."activate task manager entry 8"  = [];
-        "plasmashell"."activate task manager entry 9"  = [];
-        "plasmashell"."activate task manager entry 10" = [];
+          # ── KDE-default suppression (static path only) ───────────────────
+          # When dynamicShortcutHandling is on, leave the KDE defaults alone
+          # so aerogel-helper can snapshot + restore them.  Otherwise clear
+          # them declaratively as before.
+          (lib.optionalAttrs (!cfg.dynamicShortcutHandling) {
+            # Meta+L: "Lock Session" -- clear so aerogel-focus-right works.
+            "ksmserver"."Lock Session" = [];
 
-        # Meta+Q: "manage activities" -- clear so aerogel-close-window works.
-        "plasmashell"."manage activities" = [];
+            # Meta+0: "Zoom to Actual Size" -- clear so aerogel-desktop-10 works.
+            "kwin"."view_actual_size" = [];
 
-        # Meta+Minus/Equal: KWin "Zoom Out/In" -- clear for resize.
-        "kwin"."view_zoom_out" = [];
-        "kwin"."view_zoom_in"  = [];
+            # Meta+Left/Right: KWin "Quick Tile" left/right.
+            "kwin"."Window Quick Tile Left"  = [];
+            "kwin"."Window Quick Tile Right" = [];
 
-        # ── 2. Declarative aerogel shortcut bindings ───────────────────────
-        # These ensure KGlobalAccel has the correct key sequences for all
-        # aerogel actions, overriding any stale persisted state.
+            # Meta+Up/Down: KWin maximize/minimize.
+            "kwin"."Window Maximize" = [];
+            "kwin"."Window Minimize" = [];
 
-        # Focus navigation (vim keys)
-        "kwin"."aerogel-focus-left"  = "Meta+H";
-        "kwin"."aerogel-focus-down"  = "Meta+J";
-        "kwin"."aerogel-focus-up"    = "Meta+K";
-        "kwin"."aerogel-focus-right" = "Meta+L";
+            # Meta+Shift+Arrow corners.
+            "kwin"."Window Quick Tile Top"          = [];
+            "kwin"."Window Quick Tile Bottom"       = [];
+            "kwin"."Window Quick Tile Top Left"     = [];
+            "kwin"."Window Quick Tile Top Right"    = [];
+            "kwin"."Window Quick Tile Bottom Left"  = [];
+            "kwin"."Window Quick Tile Bottom Right" = [];
 
-        # Focus navigation (arrow keys)
-        "kwin"."aerogel-focus-left-arrow"  = "Meta+Left";
-        "kwin"."aerogel-focus-down-arrow"  = "Meta+Down";
-        "kwin"."aerogel-focus-up-arrow"    = "Meta+Up";
-        "kwin"."aerogel-focus-right-arrow" = "Meta+Right";
+            # Meta+Shift+Left/Right: window to previous/next screen.
+            "kwin"."Window to Previous Screen" = [];
+            "kwin"."Window to Next Screen"     = [];
 
-        # Window swap/move (vim keys)
-        "kwin"."aerogel-move-left"  = "Meta+Shift+H";
-        "kwin"."aerogel-move-down"  = "Meta+Shift+J";
-        "kwin"."aerogel-move-up"    = "Meta+Shift+K";
-        "kwin"."aerogel-move-right" = "Meta+Shift+L";
+            # Meta+Shift+Tab: walk through windows reverse -- keep Alt+Shift+Tab.
+            "kwin"."Walk Through Windows (Reverse)" = [ "Alt+Shift+Tab" ];
 
-        # Window swap/move (arrow keys)
-        "kwin"."aerogel-move-left-arrow"  = "Meta+Shift+Left";
-        "kwin"."aerogel-move-down-arrow"  = "Meta+Shift+Down";
-        "kwin"."aerogel-move-up-arrow"    = "Meta+Shift+Up";
-        "kwin"."aerogel-move-right-arrow" = "Meta+Shift+Right";
+            # Meta+1..9,0: plasmashell task manager entries.
+            "plasmashell"."activate task manager entry 1"  = [];
+            "plasmashell"."activate task manager entry 2"  = [];
+            "plasmashell"."activate task manager entry 3"  = [];
+            "plasmashell"."activate task manager entry 4"  = [];
+            "plasmashell"."activate task manager entry 5"  = [];
+            "plasmashell"."activate task manager entry 6"  = [];
+            "plasmashell"."activate task manager entry 7"  = [];
+            "plasmashell"."activate task manager entry 8"  = [];
+            "plasmashell"."activate task manager entry 9"  = [];
+            "plasmashell"."activate task manager entry 10" = [];
 
-        # Desktop switching (Meta+1..9,0; 0 = desktop 10)
-        "kwin"."aerogel-desktop-1"  = "Meta+1";
-        "kwin"."aerogel-desktop-2"  = "Meta+2";
-        "kwin"."aerogel-desktop-3"  = "Meta+3";
-        "kwin"."aerogel-desktop-4"  = "Meta+4";
-        "kwin"."aerogel-desktop-5"  = "Meta+5";
-        "kwin"."aerogel-desktop-6"  = "Meta+6";
-        "kwin"."aerogel-desktop-7"  = "Meta+7";
-        "kwin"."aerogel-desktop-8"  = "Meta+8";
-        "kwin"."aerogel-desktop-9"  = "Meta+9";
-        "kwin"."aerogel-desktop-10" = "Meta+0";
+            # Meta+Q: manage activities.
+            "plasmashell"."manage activities" = [];
 
-        # Move window to desktop (Meta+Shift+1..9,0)
-        "kwin"."aerogel-move-to-desktop-1"  = "Meta+Shift+1";
-        "kwin"."aerogel-move-to-desktop-2"  = "Meta+Shift+2";
-        "kwin"."aerogel-move-to-desktop-3"  = "Meta+Shift+3";
-        "kwin"."aerogel-move-to-desktop-4"  = "Meta+Shift+4";
-        "kwin"."aerogel-move-to-desktop-5"  = "Meta+Shift+5";
-        "kwin"."aerogel-move-to-desktop-6"  = "Meta+Shift+6";
-        "kwin"."aerogel-move-to-desktop-7"  = "Meta+Shift+7";
-        "kwin"."aerogel-move-to-desktop-8"  = "Meta+Shift+8";
-        "kwin"."aerogel-move-to-desktop-9"  = "Meta+Shift+9";
-        "kwin"."aerogel-move-to-desktop-10" = "Meta+Shift+0";
-
-        # Shifted-symbol alternatives (US-EN SPICE fallback)
-        "kwin"."aerogel-move-to-desktop-1-sym"  = "Meta+!";
-        "kwin"."aerogel-move-to-desktop-2-sym"  = "Meta+@";
-        "kwin"."aerogel-move-to-desktop-3-sym"  = "Meta+#";
-        "kwin"."aerogel-move-to-desktop-4-sym"  = "Meta+$";
-        "kwin"."aerogel-move-to-desktop-5-sym"  = "Meta+%";
-        "kwin"."aerogel-move-to-desktop-6-sym"  = "Meta+^";
-        "kwin"."aerogel-move-to-desktop-7-sym"  = "Meta+&";
-        "kwin"."aerogel-move-to-desktop-8-sym"  = "Meta+*";
-        "kwin"."aerogel-move-to-desktop-9-sym"  = "Meta+(";
-        "kwin"."aerogel-move-to-desktop-10-sym" = "Meta+)";
-
-        # Monitor / float / fullscreen / close / resize
-        "kwin"."aerogel-next-monitor"      = "Meta+Backtab";
-        "kwin"."aerogel-float-toggle"      = "Meta+Space";
-        "kwin"."aerogel-fullscreen-toggle"  = "Meta+F";
-        "kwin"."aerogel-close-window"      = "Meta+Q";
-        "kwin"."aerogel-resize-shrink"     = "Meta+Minus";
-        "kwin"."aerogel-resize-grow"       = "Meta+Equal";
-      }
+            # Meta+Minus/Equal: zoom out/in.
+            "kwin"."view_zoom_out" = [];
+            "kwin"."view_zoom_in"  = [];
+          })
+      )
     );
+
+    # The toggle keybind (default Meta+Ctrl+A) is registered by the
+    # aerogel-helper service itself via KGlobalAccel.doRegister + setShortcut
+    # at startup -- see scripts/aerogel-helper.py:_register_toggle_action.
+    # No plasma-manager hotkeys block here: Plasma 6 dropped khotkeys, so
+    # programs.plasma.hotkeys.commands would write to a file nothing reads.
   };
 }

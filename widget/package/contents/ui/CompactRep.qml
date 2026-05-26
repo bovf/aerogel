@@ -17,7 +17,8 @@ import org.kde.taskmanager
 Item {
     id: compactRoot
 
-    required property var switchDesktop
+    required property var  switchDesktop
+    required property bool aerogelEnabled
     signal openMenu()
 
     // ── Own desktop model ─────────────────────────────────────────────────────
@@ -58,8 +59,16 @@ Item {
         id: box
         anchors.centerIn: parent
         label:      compactRoot.currentIndex.toString()
-        isActive:   true
+        // When aerogel is enabled the box uses the highlight (active) styling
+        // -- accent colour border + tinted background.  When disabled it falls
+        // back to the inactive styling (transparent background, gray border
+        // and text), which is the visual cue that tiling is off.
+        isActive:   compactRoot.aerogelEnabled
         hasWindows: false
+
+        // Extra dimming on top so the box is unmistakably "off".
+        opacity: compactRoot.aerogelEnabled ? 1.0 : 0.55
+        Behavior on opacity { NumberAnimation { duration: 150 } }
     }
 
     // ── Mouse interactions ────────────────────────────────────────────────────
